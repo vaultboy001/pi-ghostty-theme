@@ -1,0 +1,58 @@
+{
+  "name": "pi-ghostty-theme",
+  "version": "0.2.0",
+  "description": "Choose Ghostty themes inside Pi with synchronized live preview.",
+  "type": "module",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/vaultboy001/pi-ghostty-theme.git"
+  },
+  "homepage": "https://github.com/vaultboy001/pi-ghostty-theme#readme",
+  "bugs": "https://github.com/vaultboy001/pi-ghostty-theme/issues",
+  "keywords": [
+    "pi-package",
+    "pi-coding-agent",
+    "ghostty",
+    "terminal",
+    "theme"
+  ],
+  "files": [
+    "extensions",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.5.5",
+    "@earendil-works/pi-coding-agent": "^0.82.0",
+    "@earendil-works/pi-tui": "^0.82.0",
+    "@types/node": "^24.0.0",
+    "tsx": "^4.23.1",
+    "typescript": "^7.0.2"
+  },
+  "scripts": {
+    "test": "tsx --test test/*.test.ts",
+    "typecheck": "tsc --noEmit",
+    "lint": "biome check .",
+    "check": "npm run typecheck && npm run lint && npm test",
+    "pack:dry": "npm pack --dry-run",
+    "prepublishOnly": "npm run check"
+  },
+  "pi": {
+    "extensions": [
+      "./extensions/ghostty-theme/index.ts"
+    ],
+    "video": "https://cdn.jsdelivr.net/gh/vaultboy001/pi-ghostty-theme@main/assets/demo.mp4",
+    "image": "https://cdn.jsdelivr.net/gh/vaultboy001/pi-ghostty-theme@main/assets/demo.gif"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

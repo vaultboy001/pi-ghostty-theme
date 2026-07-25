@@ -1,0 +1,128 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 640" role="img" aria-label="pi-ghostty-theme banner">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0a0e1a"/>
+      <stop offset="0.55" stop-color="#0d1226"/>
+      <stop offset="1" stop-color="#131a35"/>
+    </linearGradient>
+    <linearGradient id="wordmark" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#7dcfff"/>
+      <stop offset="0.55" stop-color="#7aa2f7"/>
+      <stop offset="1" stop-color="#bb9af7"/>
+    </linearGradient>
+    <linearGradient id="iconTile" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#7dcfff"/>
+      <stop offset="1" stop-color="#bb9af7"/>
+    </linearGradient>
+    <radialGradient id="glowCyan" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0" stop-color="#7dcfff" stop-opacity="0.22"/>
+      <stop offset="1" stop-color="#7dcfff" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="glowViolet" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0" stop-color="#bb9af7" stop-opacity="0.18"/>
+      <stop offset="1" stop-color="#bb9af7" stop-opacity="0"/>
+    </radialGradient>
+    <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse">
+      <path d="M40 0H0V40" fill="none" stroke="#ffffff" stroke-opacity="0.035" stroke-width="1"/>
+    </pattern>
+    <filter id="soft" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="14" stdDeviation="22" flood-color="#000000" flood-opacity="0.45"/>
+    </filter>
+  </defs>
+
+  <!-- backdrop -->
+  <rect width="1280" height="640" fill="url(#bg)"/>
+  <rect width="1280" height="640" fill="url(#grid)"/>
+  <circle cx="1060" cy="110" r="420" fill="url(#glowCyan)"/>
+  <circle cx="170" cy="580" r="380" fill="url(#glowViolet)"/>
+
+  <!-- left: identity block -->
+  <g font-family="ui-monospace, 'SF Mono', Menlo, Consolas, monospace">
+    <!-- icon tile -->
+    <rect x="80" y="88" width="54" height="54" rx="13" fill="none" stroke="url(#iconTile)" stroke-width="2.5"/>
+    <text x="94" y="126" font-size="26" font-weight="700" fill="url(#iconTile)">&gt;_</text>
+
+    <!-- wordmark -->
+    <text x="80" y="205" font-size="46" font-weight="700" fill="url(#wordmark)" letter-spacing="-1">pi-ghostty-theme</text>
+
+    <!-- tagline -->
+    <text x="80" y="248" font-size="19" fill="#a9b1d6">Pick any Ghostty theme inside Pi.</text>
+    <text x="80" y="276" font-size="19" fill="#a9b1d6">Terminal and Pi UI recolor as one.</text>
+
+    <!-- feature chips -->
+    <g font-size="14">
+      <rect x="80" y="316" width="132" height="36" rx="18" fill="#7dcfff14" stroke="#7dcfff40"/>
+      <text x="146" y="339" text-anchor="middle" fill="#7dcfff">463+ themes</text>
+      <rect x="226" y="316" width="172" height="36" rx="18" fill="#9ece6a14" stroke="#9ece6a40"/>
+      <text x="312" y="339" text-anchor="middle" fill="#9ece6a">live OSC preview</text>
+      <rect x="412" y="316" width="118" height="36" rx="18" fill="#bb9af714" stroke="#bb9af740"/>
+      <text x="471" y="339" text-anchor="middle" fill="#bb9af7">zero config</text>
+    </g>
+
+    <!-- install pill -->
+    <rect x="80" y="392" width="360" height="46" rx="10" fill="#0d1226" stroke="#2a3350"/>
+    <text x="100" y="421" font-size="15"><tspan fill="#9ece6a">$ </tspan><tspan fill="#c0caf5">pi install npm:pi-ghostty-theme</tspan></text>
+
+    <!-- footnote -->
+    <text x="80" y="566" font-size="13" fill="#565f89">Ghostty &#8805; 1.2 &#183; Pi &#8805; 0.82 &#183; Node &#8805; 22.19 &#183; MIT</text>
+  </g>
+
+  <!-- right: terminal mockup -->
+  <g filter="url(#soft)">
+    <rect x="600" y="110" width="600" height="430" rx="12" fill="#141624" fill-opacity="0.97" stroke="#2a3350"/>
+  </g>
+  <g font-family="ui-monospace, 'SF Mono', Menlo, Consolas, monospace">
+    <!-- title bar -->
+    <circle cx="626" cy="130" r="6" fill="#ff5f57"/>
+    <circle cx="650" cy="130" r="6" fill="#febc2e"/>
+    <circle cx="674" cy="130" r="6" fill="#28c840"/>
+    <text x="700" y="135" font-size="13" fill="#565f89">ghostty &#8212; pi</text>
+    <line x1="600" y1="148" x2="1200" y2="148" stroke="#2a3350"/>
+
+    <!-- prompt -->
+    <text x="624" y="182" font-size="15"><tspan fill="#9ece6a">$ </tspan><tspan fill="#c0caf5">/ghostty-theme</tspan></text>
+    <text x="624" y="210" font-size="13"><tspan fill="#565f89">filter: </tspan><tspan fill="#c0caf5">tokyo</tspan></text>
+    <rect x="700" y="199" width="8" height="15" fill="#7dcfff"/>
+
+    <!-- highlighted row: tokyonight -->
+    <rect x="612" y="226" width="576" height="42" rx="8" fill="#7dcfff1c" stroke="#7dcfff70"/>
+    <polygon points="628,240 636,246 628,252" fill="#7dcfff"/>
+    <text x="652" y="253" font-size="15" font-weight="700" fill="#c0caf5">tokyonight</text>
+    <circle cx="1088" cy="247" r="7" fill="#f7768e"/>
+    <circle cx="1110" cy="247" r="7" fill="#9ece6a"/>
+    <circle cx="1132" cy="247" r="7" fill="#e0af68"/>
+    <circle cx="1154" cy="247" r="7" fill="#7aa2f7"/>
+
+    <!-- rows -->
+    <text x="652" y="295" font-size="15" fill="#a9b1d6">catppuccin-mocha</text>
+    <circle cx="1088" cy="289" r="7" fill="#f38ba8"/>
+    <circle cx="1110" cy="289" r="7" fill="#a6e3a1"/>
+    <circle cx="1132" cy="289" r="7" fill="#f9e2af"/>
+    <circle cx="1154" cy="289" r="7" fill="#89b4fa"/>
+
+    <text x="652" y="337" font-size="15" fill="#a9b1d6">dracula</text>
+    <circle cx="1088" cy="331" r="7" fill="#ff5555"/>
+    <circle cx="1110" cy="331" r="7" fill="#50fa7b"/>
+    <circle cx="1132" cy="331" r="7" fill="#f1fa8c"/>
+    <circle cx="1154" cy="331" r="7" fill="#bd93f9"/>
+
+    <text x="652" y="379" font-size="15" fill="#a9b1d6">nord</text>
+    <circle cx="1088" cy="373" r="7" fill="#bf616a"/>
+    <circle cx="1110" cy="373" r="7" fill="#a3be8c"/>
+    <circle cx="1132" cy="373" r="7" fill="#ebcb8b"/>
+    <circle cx="1154" cy="373" r="7" fill="#81a1c1"/>
+
+    <text x="652" y="421" font-size="15" fill="#a9b1d6">gruvbox-dark</text>
+    <circle cx="1088" cy="415" r="7" fill="#fb4934"/>
+    <circle cx="1110" cy="415" r="7" fill="#b8bb26"/>
+    <circle cx="1132" cy="415" r="7" fill="#fabd2f"/>
+    <circle cx="1154" cy="415" r="7" fill="#83a598"/>
+
+    <!-- status line -->
+    <text x="624" y="470" font-size="12" fill="#565f89">&#8629; apply &#183; esc restore &#183; 463 themes available</text>
+
+    <!-- apply flash -->
+    <rect x="612" y="486" width="576" height="34" rx="8" fill="#9ece6a12" stroke="#9ece6a45"/>
+    <text x="624" y="508" font-size="13" fill="#9ece6a">&#10003; Ghostty and Pi now use tokyonight</text>
+  </g>
+</svg>
