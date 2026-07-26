@@ -9,24 +9,21 @@ import type {
   Theme,
 } from "@earendil-works/pi-coding-agent";
 import { visibleWidth } from "@earendil-works/pi-tui";
-import { runBoundedCommand } from "../extensions/ghostty-theme/catalog.js";
+import { runBoundedCommand } from "../extensions/catalog.js";
 import {
   type GhosttyTheme,
   parseGhosttyTheme,
   parseThemeList,
   resetSequence,
   themeSequence,
-} from "../extensions/ghostty-theme/ghostty.js";
+} from "../extensions/ghostty.js";
 import {
   createExtension,
   type Host,
   inactiveReason,
-} from "../extensions/ghostty-theme/index.js";
-import {
-  loadSelectionFile,
-  saveSelectionFile,
-} from "../extensions/ghostty-theme/storage.js";
-import { X11_COLORS } from "../extensions/ghostty-theme/x11-colors.js";
+} from "../extensions/index.js";
+import { loadSelectionFile, saveSelectionFile } from "../extensions/storage.js";
+import { X11_COLORS } from "../extensions/x11-colors.js";
 
 const COLORS = [
   "#2d2a2e",
