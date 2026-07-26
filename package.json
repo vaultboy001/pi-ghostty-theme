@@ -1,6 +1,6 @@
 {
   "name": "pi-ghostty-theme",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "Choose Ghostty themes inside Pi with synchronized live preview.",
   "type": "module",
   "license": "MIT",

@@ -70,7 +70,8 @@ Terminal, Pi, and saved-state cleanup are attempted independently. If terminal c
 2. The selected native theme file supplies background, foreground, cursor, and ANSI colors 0–15 as six-digit RGB values or Ghostty-supported named X11 colors. Named colors are normalized to RGB before OSC generation.
 3. The extension sends one OSC batch to the current Ghostty surface and creates a Pi theme from the same palette.
 4. The selected name is stored in `~/.pi/agent/ghostty-theme.json` and reapplied when Pi starts. A missing file is normal; corrupt, oversized, non-regular, or unreadable state is reported and skipped. `reset` or `off` clears invalid state when filesystem permissions allow.
-5. Normal Pi shutdown waits for mutations already committing, invalidates pending reads/previews, and then resets the terminal color overrides.
+5. During `/reload`, Pi reapplies its configured theme after extension `session_start` handlers. The extension makes bounded immediate and delayed post-resource-discovery checks, reasserting the saved Ghostty-derived Pi colors only if Pi takes over (including after asynchronous terminal-theme detection).
+6. Normal Pi shutdown waits for mutations already committing, invalidates pending reads/previews and reload reassertions, and then resets the terminal color overrides.
 
 There is no polling loop, periodic reassertion, copied theme catalog, or Ghostty config rewrite.
 

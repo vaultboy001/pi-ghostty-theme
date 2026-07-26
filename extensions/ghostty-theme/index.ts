@@ -23,6 +23,19 @@ import {
   writeToTerminal,
 } from "./storage.js";
 
+type DeferredTask = () => Promise<void> | void;
+
+const POST_RELOAD_SETTLE_MS = 250;
+
+function deferTask(task: DeferredTask, delayMs = 0): void {
+  if (delayMs > 0) {
+    const timer = setTimeout(() => void task(), delayMs);
+    timer.unref();
+    return;
+  }
+  setImmediate(() => void task());
+}
+
 export interface Host {
   env(): NodeJS.ProcessEnv;
   tty(): boolean;
@@ -31,6 +44,7 @@ export interface Host {
   writeDiagnostic?(value: string): void;
   loadSelection(): Promise<string | undefined>;
   saveSelection(name: string | undefined): Promise<void>;
+  defer?(task: DeferredTask, delayMs?: number): void;
 }
 
 const defaultHost: Host = {
@@ -41,6 +55,7 @@ const defaultHost: Host = {
   writeDiagnostic: (value) => process.stderr.write(value),
   loadSelection: loadSavedSelection,
   saveSelection: saveSavedSelection,
+  defer: deferTask,
 };
 
 export function inactiveReason(
@@ -87,6 +102,9 @@ export function createExtension(
     let mutationGeneration = 0;
     let commitTail: Promise<void> = Promise.resolve();
     let running = false;
+    let pendingReloadReassertion:
+      | { name: string; token: MutationToken }
+      | undefined;
     const cache = new Map<string, GhosttyTheme>();
 
     const findSource = (name: string): ThemeSource | undefined => {
@@ -245,6 +263,7 @@ export function createExtension(
     const applyPrepared = (
       prepared: Awaited<ReturnType<typeof prepare>>,
       ctx: ExtensionContext,
+      options: { writeTerminal?: boolean } = {},
     ): void => {
       const reason = inactiveReason(ctx.mode, host.tty(), host.env());
       if (reason) {
@@ -252,22 +271,25 @@ export function createExtension(
         throw new Error(`theme application cancelled because ${reason}`);
       }
       captureBaseline(ctx);
-      host.writeTerminal(themeSequence(prepared.native));
-      terminalOwned = true;
-      terminalOwnedName = prepared.native.name;
+      const wroteTerminal = options.writeTerminal !== false;
+      if (wroteTerminal) {
+        host.writeTerminal(themeSequence(prepared.native));
+        terminalOwned = true;
+        terminalOwnedName = prepared.native.name;
+      }
 
       let result: ReturnType<ExtensionContext["ui"]["setTheme"]>;
       try {
         result = ctx.ui.setTheme(prepared.piTheme);
       } catch (error) {
-        const terminalError = restoreTerminal(ctx);
+        const terminalError = wroteTerminal ? restoreTerminal(ctx) : undefined;
         const suffix = terminalError
           ? `; terminal rollback failed: ${terminalError}`
           : "";
         throw new Error(`${describeError(error)}${suffix}`);
       }
       if (!result.success) {
-        const terminalError = restoreTerminal(ctx);
+        const terminalError = wroteTerminal ? restoreTerminal(ctx) : undefined;
         const suffix = terminalError
           ? `; terminal rollback failed: ${terminalError}`
           : "";
@@ -284,16 +306,50 @@ export function createExtension(
       name: string,
       ctx: ExtensionContext,
       token: MutationToken,
-      options: { persist?: boolean; setActive?: boolean } = {},
+      options: {
+        persist?: boolean;
+        setActive?: boolean;
+        writeTerminal?: boolean;
+      } = {},
     ): Promise<boolean> => {
       const prepared = await prepare(name, ctx);
       if (!isMutationCurrent(token)) return false;
       const committed = await commitMutation(token, async () => {
-        applyPrepared(prepared, ctx);
+        applyPrepared(prepared, ctx, {
+          writeTerminal: options.writeTerminal,
+        });
         if (options.setActive !== false) activeName = name;
         if (options.persist) await host.saveSelection(name);
       });
       return committed.committed;
+    };
+
+    const deferReloadReassertion = (ctx: ExtensionContext): void => {
+      const pending = pendingReloadReassertion;
+      pendingReloadReassertion = undefined;
+      if (!pending) return;
+
+      const reassertIfDisplaced = async (): Promise<void> => {
+        if (!isMutationCurrent(pending.token)) return;
+        if (ownedPiTheme && ctx.ui.theme === ownedPiTheme) return;
+        try {
+          await applyName(pending.name, ctx, pending.token, {
+            setActive: false,
+            writeTerminal: false,
+          });
+        } catch (error) {
+          if (!isMutationCurrent(pending.token)) return;
+          lastIssue = `post-reload reapply failed: ${describeError(error)}`;
+          report(ctx, `Ghostty theme: ${lastIssue}.`, "warning");
+        }
+      };
+
+      const defer = host.defer ?? deferTask;
+      defer(reassertIfDisplaced);
+      // Pi's auto/default theme paths can spend 100 ms detecting terminal
+      // appearance after resource discovery. This bounded guard catches that
+      // later takeover without polling or writing another terminal OSC batch.
+      defer(reassertIfDisplaced, POST_RELOAD_SETTLE_MS);
     };
 
     interface ResetOutcome {
@@ -505,10 +561,11 @@ export function createExtension(
       },
     });
 
-    pi.on("session_start", async (_event, ctx) => {
+    pi.on("session_start", async (event, ctx) => {
       running = false;
       lifecycleGeneration += 1;
       invalidateMutations();
+      pendingReloadReassertion = undefined;
       await commitTail;
 
       const previousName = activeName;
@@ -551,7 +608,13 @@ export function createExtension(
           });
           return;
         }
-        await applyName(savedSource.name, ctx, token);
+        const applied = await applyName(savedSource.name, ctx, token);
+        if (applied && event.reason === "reload" && isMutationCurrent(token)) {
+          pendingReloadReassertion = {
+            name: savedSource.name,
+            token,
+          };
+        }
       } catch (error) {
         if (!isMutationCurrent(token)) return;
         lastIssue = describeError(error);
@@ -559,10 +622,15 @@ export function createExtension(
       }
     });
 
+    pi.on("resources_discover", (event, ctx) => {
+      if (event.reason === "reload") deferReloadReassertion(ctx);
+    });
+
     pi.on("session_shutdown", async (_event, ctx) => {
       running = false;
       lifecycleGeneration += 1;
       invalidateMutations();
+      pendingReloadReassertion = undefined;
       await commitTail;
       restoreTerminal(ctx);
       restoreBaseline(ctx);

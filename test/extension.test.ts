@@ -98,9 +98,12 @@ interface Fixture {
   writes: string[];
   diagnostics: string[];
   files: Map<string, string>;
+  runNextDeferred(): Promise<boolean>;
+  runDeferred(): Promise<void>;
 }
 
 function fixture(selection?: string): Fixture {
+  const deferredTasks: Array<() => Promise<void> | void> = [];
   const value: Fixture = {
     selection,
     saves: [],
@@ -110,6 +113,15 @@ function fixture(selection?: string): Fixture {
       ["/themes/Monokai Pro", themeText()],
       ["/themes/Black Metal (Bathory)", themeText()],
     ]),
+    runNextDeferred: async () => {
+      const task = deferredTasks.shift();
+      if (!task) return false;
+      await task();
+      return true;
+    },
+    runDeferred: async () => {
+      while (deferredTasks.length) await deferredTasks.shift()?.();
+    },
     host: undefined as unknown as Host,
   };
   value.host = {
@@ -127,6 +139,7 @@ function fixture(selection?: string): Fixture {
       value.selection = name;
       value.saves.push(name);
     },
+    defer: (task) => deferredTasks.push(task),
   };
   return value;
 }
@@ -277,11 +290,14 @@ function harness(state: Fixture, options: HarnessOptions = {}) {
   } as unknown as ExtensionAPI;
   createExtension(state.host, loadCatalog)(pi);
   const start = events.get("session_start");
+  const resources = events.get("resources_discover");
   const shutdown = events.get("session_shutdown");
   assert.ok(start);
+  assert.ok(resources);
   assert.ok(shutdown);
   return {
     start,
+    resources,
     shutdown,
     commands,
     get catalogCalls() {
@@ -528,6 +544,78 @@ test("restores a saved selection without adding a footer indicator", async () =>
   await app.shutdown({}, view.ctx);
   assert.equal(state.writes[1], resetSequence());
   assert.equal(view.currentTheme, baseline);
+});
+
+test("reload reasserts the saved Pi theme after settings take over", async () => {
+  const state = fixture("Monokai Pro");
+  const app = harness(state);
+  const view = context();
+
+  await app.start({ reason: "reload" }, view.ctx);
+  assert.equal(view.currentTheme.name, "Ghostty · Monokai Pro");
+  assert.equal(state.writes.length, 1);
+
+  await app.resources({ reason: "reload" }, view.ctx);
+  view.setCurrentTheme(view.baseline);
+  await state.runDeferred();
+
+  assert.equal(view.currentTheme.name, "Ghostty · Monokai Pro");
+  assert.equal(state.writes.length, 1);
+});
+
+test("reload catches a settings takeover after the immediate check", async () => {
+  const state = fixture("Monokai Pro");
+  const app = harness(state);
+  const view = context();
+
+  await app.start({ reason: "reload" }, view.ctx);
+  await app.resources({ reason: "reload" }, view.ctx);
+
+  assert.equal(await state.runNextDeferred(), true);
+  assert.equal(view.currentTheme.name, "Ghostty · Monokai Pro");
+
+  view.setCurrentTheme(view.baseline);
+  await state.runDeferred();
+
+  assert.equal(view.currentTheme.name, "Ghostty · Monokai Pro");
+  assert.equal(state.writes.length, 1);
+});
+
+test("failed Pi-only reload reassertion preserves terminal ownership", async () => {
+  const state = fixture("Monokai Pro");
+  const app = harness(state);
+  const view = context({
+    setThemeResult: (_next, _current, callIndex) =>
+      callIndex === 1
+        ? { success: false, error: "Pi reassert denied" }
+        : { success: true },
+  });
+
+  await app.start({ reason: "reload" }, view.ctx);
+  await app.resources({ reason: "reload" }, view.ctx);
+  view.setCurrentTheme(view.baseline);
+  assert.equal(await state.runNextDeferred(), true);
+
+  assert.equal(view.currentTheme, view.baseline);
+  assert.equal(state.writes.length, 1);
+  assert.match(view.notifications.at(-1)?.message ?? "", /reassert denied/i);
+
+  await app.shutdown({ reason: "reload" }, view.ctx);
+  assert.equal(state.writes.at(-1), resetSequence());
+});
+
+test("shutdown invalidates a deferred reload reassertion", async () => {
+  const state = fixture("Monokai Pro");
+  const app = harness(state);
+  const view = context();
+
+  await app.start({ reason: "reload" }, view.ctx);
+  await app.resources({ reason: "reload" }, view.ctx);
+  await app.shutdown({ reason: "reload" }, view.ctx);
+  await state.runDeferred();
+
+  assert.equal(view.currentTheme, view.baseline);
+  assert.equal(state.writes.at(-1), resetSequence());
 });
 
 test("shutdown invalidates an in-flight startup theme read", async () => {
