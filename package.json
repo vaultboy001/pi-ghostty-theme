@@ -1,7 +1,7 @@
 {
   "name": "pi-ghostty-theme",
-  "version": "0.2.2",
-  "description": "Choose Ghostty themes inside Pi with synchronized live preview.",
+  "version": "0.3.0",
+  "description": "Choose and live-preview Ghostty terminal themes inside Pi without changing Pi's own theme.",
   "type": "module",
   "license": "MIT",
   "repository": {

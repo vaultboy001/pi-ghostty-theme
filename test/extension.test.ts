@@ -6,8 +6,8 @@ import test from "node:test";
 import type {
   ExtensionAPI,
   ExtensionContext,
+  Theme,
 } from "@earendil-works/pi-coding-agent";
-import { Theme } from "@earendil-works/pi-coding-agent";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import { runBoundedCommand } from "../extensions/ghostty-theme/catalog.js";
 import {
@@ -22,7 +22,6 @@ import {
   type Host,
   inactiveReason,
 } from "../extensions/ghostty-theme/index.js";
-import { createPiTheme } from "../extensions/ghostty-theme/pi-theme.js";
 import {
   loadSelectionFile,
   saveSelectionFile,
@@ -54,9 +53,6 @@ function themeText(overrides: string[] = []): string {
     "background = #2d2a2e",
     "foreground = #fcfcfa",
     "cursor-color = #c1c0c0",
-    "cursor-text = #8e8d8d",
-    "selection-background = #5b595c",
-    "selection-foreground = #fcfcfa",
     ...overrides,
   ].join("\n");
 }
@@ -88,7 +84,7 @@ function hasTerminalControl(value: string): boolean {
 }
 
 function nativeTheme(name = "Monokai Pro"): GhosttyTheme {
-  return parseGhosttyTheme(name, `/themes/${name}`, themeText());
+  return parseGhosttyTheme(name, themeText());
 }
 
 interface Fixture {
@@ -98,12 +94,9 @@ interface Fixture {
   writes: string[];
   diagnostics: string[];
   files: Map<string, string>;
-  runNextDeferred(): Promise<boolean>;
-  runDeferred(): Promise<void>;
 }
 
 function fixture(selection?: string): Fixture {
-  const deferredTasks: Array<() => Promise<void> | void> = [];
   const value: Fixture = {
     selection,
     saves: [],
@@ -113,15 +106,6 @@ function fixture(selection?: string): Fixture {
       ["/themes/Monokai Pro", themeText()],
       ["/themes/Black Metal (Bathory)", themeText()],
     ]),
-    runNextDeferred: async () => {
-      const task = deferredTasks.shift();
-      if (!task) return false;
-      await task();
-      return true;
-    },
-    runDeferred: async () => {
-      while (deferredTasks.length) await deferredTasks.shift()?.();
-    },
     host: undefined as unknown as Host,
   };
   value.host = {
@@ -139,7 +123,6 @@ function fixture(selection?: string): Fixture {
       value.selection = name;
       value.saves.push(name);
     },
-    defer: (task) => deferredTasks.push(task),
   };
   return value;
 }
@@ -152,8 +135,36 @@ type Command = {
   ): Array<{ value: string; label: string }> | null;
 };
 
+function piTheme(name = "Baseline", accent = "#8abeb7"): Theme {
+  const ansi = (hex: string): string => {
+    const channels = [1, 3, 5].map((offset) =>
+      Number.parseInt(hex.slice(offset, offset + 2), 16),
+    );
+    return `\u001b[38;2;${channels.join(";")}m`;
+  };
+  const foregrounds = new Map<string, string>([
+    ["accent", ansi(accent)],
+    ["muted", ansi("#808080")],
+    ["dim", ansi("#606060")],
+    ["warning", ansi("#f0c674")],
+  ]);
+  const defaultForeground = ansi("#c5c8c6");
+  const defaultBackground = "\u001b[48;2;29;31;33m";
+
+  return {
+    name: `Pi · ${name}`,
+    fg: (color: string, text: string) =>
+      `${foregrounds.get(color) ?? defaultForeground}${text}\u001b[39m`,
+    bg: (_color: string, text: string) =>
+      `${defaultBackground}${text}\u001b[49m`,
+    bold: (text: string) => `\u001b[1m${text}\u001b[22m`,
+    getFgAnsi: (color: string) => foregrounds.get(color) ?? defaultForeground,
+    getBgAnsi: () => defaultBackground,
+  } as unknown as Theme;
+}
+
 function baselineTheme(): Theme {
-  return createPiTheme(nativeTheme("Baseline"), Theme as never);
+  return piTheme();
 }
 
 interface PickerComponent {
@@ -172,15 +183,8 @@ type PickerFactory = (
 interface ContextOptions {
   customSelection?: string | null;
   simulatePicker?: boolean;
-  initialTheme?: Theme;
   mode?: ExtensionContext["mode"];
   hasUI?: boolean;
-  getTheme?: (name: string) => Theme | undefined;
-  setThemeResult?: (
-    next: string | Theme,
-    current: Theme,
-    callIndex: number,
-  ) => { success: boolean; error?: string };
   runPicker?: (
     component: PickerComponent,
     done: (value: string | null) => void,
@@ -188,14 +192,12 @@ interface ContextOptions {
 }
 
 function context(options: ContextOptions = {}) {
-  let currentTheme = options.initialTheme ?? baselineTheme();
+  let currentTheme = baselineTheme();
   const baseline = currentTheme;
   const mode = options.mode ?? "tui";
   let hasUI = options.hasUI ?? (mode === "tui" || mode === "rpc");
   const notifications: Array<{ message: string; level?: string }> = [];
   const setThemeCalls: Array<string | Theme> = [];
-  const pickerComponents: PickerComponent[] = [];
-  let renderRequests = 0;
   const runCustom = async (
     factory: unknown,
   ): Promise<string | null | undefined> => {
@@ -207,12 +209,11 @@ function context(options: ContextOptions = {}) {
       finish = resolve;
     });
     const component = (factory as PickerFactory)(
-      { requestRender: () => (renderRequests += 1) },
+      { requestRender: () => undefined },
       currentTheme,
       {},
       finish,
     );
-    pickerComponents.push(component);
     if (options.runPicker) {
       await options.runPicker(component, finish);
     } else {
@@ -229,18 +230,10 @@ function context(options: ContextOptions = {}) {
       get theme() {
         return currentTheme;
       },
-      getTheme:
-        options.getTheme ??
-        ((name: string) => (name === baseline.name ? baseline : undefined)),
       setTheme: (next: string | Theme) => {
-        const callIndex = setThemeCalls.push(next) - 1;
-        const outcome =
-          options.setThemeResult?.(next, currentTheme, callIndex) ??
-          (typeof next === "string"
-            ? { success: false, error: "unexpected named theme" }
-            : { success: true });
-        if (outcome.success && typeof next !== "string") currentTheme = next;
-        return outcome;
+        setThemeCalls.push(next);
+        if (typeof next !== "string") currentTheme = next;
+        return { success: true };
       },
       notify: (message: string, level?: string) => {
         if (hasUI) notifications.push({ message, level });
@@ -253,10 +246,6 @@ function context(options: ContextOptions = {}) {
     baseline,
     notifications,
     setThemeCalls,
-    pickerComponents,
-    get renderRequests() {
-      return renderRequests;
-    },
     get currentTheme() {
       return currentTheme;
     },
@@ -290,14 +279,11 @@ function harness(state: Fixture, options: HarnessOptions = {}) {
   } as unknown as ExtensionAPI;
   createExtension(state.host, loadCatalog)(pi);
   const start = events.get("session_start");
-  const resources = events.get("resources_discover");
   const shutdown = events.get("session_shutdown");
   assert.ok(start);
-  assert.ok(resources);
   assert.ok(shutdown);
   return {
     start,
-    resources,
     shutdown,
     commands,
     get catalogCalls() {
@@ -430,16 +416,12 @@ test("parses Ghostty theme discovery output without breaking parenthesized names
   ]);
 });
 
-test("parses a complete native Ghostty color theme", () => {
+test("parses the Ghostty colors supported by the runtime protocol", () => {
   assert.deepEqual(nativeTheme(), {
     name: "Monokai Pro",
-    path: "/themes/Monokai Pro",
     background: "#2d2a2e",
     foreground: "#fcfcfa",
     cursor: "#c1c0c0",
-    cursorText: "#8e8d8d",
-    selectionBackground: "#5b595c",
-    selectionForeground: "#fcfcfa",
     palette: COLORS,
   });
 });
@@ -447,15 +429,12 @@ test("parses a complete native Ghostty color theme", () => {
 test("parses Ghostty named X11 colors into canonical RGB", () => {
   const parsed = parseGhosttyTheme(
     "named",
-    "/named",
     themeText([
       "background = black",
       "foreground = Alice Blue",
       "palette = 0=gray42",
       "palette = 1=red",
       "cursor-color = rebeccapurple",
-      "cursor-text = white",
-      "selection-background = PaleVioletRed3",
     ]),
   );
 
@@ -464,8 +443,6 @@ test("parses Ghostty named X11 colors into canonical RGB", () => {
   assert.equal(parsed.palette[0], "#6b6b6b");
   assert.equal(parsed.palette[1], "#ff0000");
   assert.equal(parsed.cursor, "#663399");
-  assert.equal(parsed.cursorText, "#ffffff");
-  assert.equal(parsed.selectionBackground, "#cd6889");
 });
 
 test("the complete bundled X11 table stays canonical and parseable", () => {
@@ -475,7 +452,6 @@ test("the complete bundled X11 table stays canonical and parseable", () => {
     assert.match(expected, /^#[0-9a-f]{6}$/);
     const parsed = parseGhosttyTheme(
       "named",
-      "/named",
       themeText([`background = ${name}`]),
     );
     assert.equal(parsed.background, expected, name);
@@ -484,22 +460,19 @@ test("the complete bundled X11 table stays canonical and parseable", () => {
 
 test("rejects incomplete or unsupported native themes", () => {
   assert.throws(
-    () =>
-      parseGhosttyTheme("bad", "/bad", themeText(["background = not-a-color"])),
+    () => parseGhosttyTheme("bad", themeText(["background = not-a-color"])),
     /background and foreground/,
   );
   assert.throws(
     () =>
       parseGhosttyTheme(
         "bad",
-        "/bad",
         themeText().replace("palette = 15=#fcfcfa", "palette = 15=rgb(0 0 0)"),
       ),
     /palette colors 0 through 15/,
   );
   assert.throws(
-    () =>
-      parseGhosttyTheme("bad", "/bad", themeText(["foreground = red\u001b"])),
+    () => parseGhosttyTheme("bad", themeText(["foreground = red\u001b"])),
     /background and foreground/,
   );
 });
@@ -522,100 +495,40 @@ test("resets only color overrides owned by the extension", () => {
   );
 });
 
-test("derives a complete Pi theme from the same Ghostty palette", () => {
-  const derived = createPiTheme(nativeTheme(), Theme as never);
-  assert.equal(derived.name, "Ghostty · Monokai Pro");
-  assert.match(derived.getFgAnsi("text"), /38;2;252;252;250m/);
-  assert.match(derived.getFgAnsi("success"), /38;2;169;220;118m/);
-  assert.match(derived.getBgAnsi("selectedBg"), /48;2;91;89;92m/);
-});
-
-test("restores a saved selection without adding a footer indicator", async () => {
+test("applies a saved Ghostty theme without changing the Pi theme", async () => {
   const state = fixture("Monokai Pro");
   const app = harness(state);
   const view = context();
   const baseline = view.currentTheme;
+
   await app.start({}, view.ctx);
 
-  assert.equal(state.writes.length, 1);
-  assert.equal(state.writes[0], themeSequence(nativeTheme()));
-  assert.equal(view.currentTheme.name, "Ghostty · Monokai Pro");
+  assert.deepEqual(state.writes, [themeSequence(nativeTheme())]);
+  assert.equal(view.currentTheme, baseline);
+  assert.deepEqual(view.setThemeCalls, []);
 
   await app.shutdown({}, view.ctx);
-  assert.equal(state.writes[1], resetSequence());
+  assert.equal(state.writes.at(-1), resetSequence());
   assert.equal(view.currentTheme, baseline);
 });
 
-test("reload reasserts the saved Pi theme after settings take over", async () => {
+test("reload resets and reapplies only the Ghostty terminal theme", async () => {
   const state = fixture("Monokai Pro");
   const app = harness(state);
   const view = context();
+  const baseline = view.currentTheme;
 
-  await app.start({ reason: "reload" }, view.ctx);
-  assert.equal(view.currentTheme.name, "Ghostty · Monokai Pro");
-  assert.equal(state.writes.length, 1);
-
-  await app.resources({ reason: "reload" }, view.ctx);
-  view.setCurrentTheme(view.baseline);
-  await state.runDeferred();
-
-  assert.equal(view.currentTheme.name, "Ghostty · Monokai Pro");
-  assert.equal(state.writes.length, 1);
-});
-
-test("reload catches a settings takeover after the immediate check", async () => {
-  const state = fixture("Monokai Pro");
-  const app = harness(state);
-  const view = context();
-
-  await app.start({ reason: "reload" }, view.ctx);
-  await app.resources({ reason: "reload" }, view.ctx);
-
-  assert.equal(await state.runNextDeferred(), true);
-  assert.equal(view.currentTheme.name, "Ghostty · Monokai Pro");
-
-  view.setCurrentTheme(view.baseline);
-  await state.runDeferred();
-
-  assert.equal(view.currentTheme.name, "Ghostty · Monokai Pro");
-  assert.equal(state.writes.length, 1);
-});
-
-test("failed Pi-only reload reassertion preserves terminal ownership", async () => {
-  const state = fixture("Monokai Pro");
-  const app = harness(state);
-  const view = context({
-    setThemeResult: (_next, _current, callIndex) =>
-      callIndex === 1
-        ? { success: false, error: "Pi reassert denied" }
-        : { success: true },
-  });
-
-  await app.start({ reason: "reload" }, view.ctx);
-  await app.resources({ reason: "reload" }, view.ctx);
-  view.setCurrentTheme(view.baseline);
-  assert.equal(await state.runNextDeferred(), true);
-
-  assert.equal(view.currentTheme, view.baseline);
-  assert.equal(state.writes.length, 1);
-  assert.match(view.notifications.at(-1)?.message ?? "", /reassert denied/i);
-
+  await app.start({ reason: "startup" }, view.ctx);
   await app.shutdown({ reason: "reload" }, view.ctx);
-  assert.equal(state.writes.at(-1), resetSequence());
-});
-
-test("shutdown invalidates a deferred reload reassertion", async () => {
-  const state = fixture("Monokai Pro");
-  const app = harness(state);
-  const view = context();
-
   await app.start({ reason: "reload" }, view.ctx);
-  await app.resources({ reason: "reload" }, view.ctx);
-  await app.shutdown({ reason: "reload" }, view.ctx);
-  await state.runDeferred();
 
-  assert.equal(view.currentTheme, view.baseline);
-  assert.equal(state.writes.at(-1), resetSequence());
+  assert.deepEqual(state.writes, [
+    themeSequence(nativeTheme()),
+    resetSequence(),
+    themeSequence(nativeTheme()),
+  ]);
+  assert.equal(view.currentTheme, baseline);
+  assert.deepEqual(view.setThemeCalls, []);
 });
 
 test("shutdown invalidates an in-flight startup theme read", async () => {
@@ -639,19 +552,6 @@ test("shutdown invalidates an in-flight startup theme read", async () => {
   assert.equal(view.currentTheme, baseline);
 });
 
-test("shutdown does not undo unrelated Pi theme changes when extension is unused", async () => {
-  const state = fixture();
-  const app = harness(state);
-  const view = context();
-  await app.start({}, view.ctx);
-  const changed = createPiTheme(nativeTheme("External"), Theme as never);
-  view.setCurrentTheme(changed);
-  await app.shutdown({}, view.ctx);
-
-  assert.equal(view.currentTheme, changed);
-  assert.deepEqual(state.writes, []);
-});
-
 test("direct command applies and persists a named theme", async () => {
   const state = fixture();
   const app = harness(state);
@@ -662,7 +562,10 @@ test("direct command applies and persists a named theme", async () => {
   assert.equal(state.selection, "Monokai Pro");
   assert.deepEqual(state.saves, ["Monokai Pro"]);
   assert.equal(state.writes.at(-1), themeSequence(nativeTheme()));
-  assert.match(view.notifications.at(-1)?.message ?? "", /now use Monokai Pro/);
+  assert.match(
+    view.notifications.at(-1)?.message ?? "",
+    /now uses Monokai Pro/,
+  );
 
   const completions = registered(app, "ghostty-theme").getArgumentCompletions?.(
     "mono",
@@ -697,7 +600,8 @@ test("newer direct apply wins over an older delayed apply", async () => {
   assert.equal(state.selection, "Black Metal (Bathory)");
   assert.deepEqual(state.saves, ["Black Metal (Bathory)"]);
   assert.equal(state.writes.length, 1);
-  assert.equal(view.currentTheme.name, "Ghostty · Black Metal (Bathory)");
+  assert.equal(view.currentTheme, view.baseline);
+  assert.deepEqual(view.setThemeCalls, []);
 });
 
 test("reset invalidates an older apply still reading its theme", async () => {
@@ -787,7 +691,8 @@ test("newer apply follows a reset whose persistence deletion is running", async 
 
   assert.equal(state.selection, "Black Metal (Bathory)");
   assert.deepEqual(state.saves, [undefined, "Black Metal (Bathory)"]);
-  assert.equal(view.currentTheme.name, "Ghostty · Black Metal (Bathory)");
+  assert.equal(view.currentTheme, view.baseline);
+  assert.deepEqual(view.setThemeCalls, []);
 });
 
 test("picker navigation live-previews before applying the selection", async () => {
@@ -801,6 +706,8 @@ test("picker navigation live-previews before applying the selection", async () =
   assert.equal(state.writes.length, 2);
   assert.equal(state.writes[0], themeSequence(nativeTheme()));
   assert.equal(state.writes[1], themeSequence(nativeTheme()));
+  assert.equal(view.currentTheme, view.baseline);
+  assert.deepEqual(view.setThemeCalls, []);
 });
 
 test("picker selection applies and persists while cancel leaves state unchanged", async () => {
@@ -812,10 +719,8 @@ test("picker selection applies and persists while cancel leaves state unchanged"
   await selectedApp.start({}, selectedView.ctx);
   await registered(selectedApp, "ghostty-theme").handler("", selectedView.ctx);
   assert.equal(selected.selection, "Black Metal (Bathory)");
-  assert.equal(
-    selectedView.currentTheme.name,
-    "Ghostty · Black Metal (Bathory)",
-  );
+  assert.equal(selectedView.currentTheme, selectedView.baseline);
+  assert.deepEqual(selectedView.setThemeCalls, []);
 
   const cancelled = fixture();
   const cancelledApp = harness(cancelled);
@@ -829,7 +734,7 @@ test("picker selection applies and persists while cancel leaves state unchanged"
   assert.deepEqual(cancelled.saves, []);
 });
 
-test("reset clears persisted state and restores terminal and Pi defaults", async () => {
+test("reset clears persisted state and restores terminal defaults", async () => {
   const state = fixture("Monokai Pro");
   const app = harness(state);
   const view = context();
@@ -1047,7 +952,8 @@ test("async apply rechecks direct Ghostty gating before OSC", async () => {
   );
   assert.equal(state.writes.length, 1);
   assert.equal(state.selection, "Monokai Pro");
-  assert.equal(view.currentTheme.name, "Ghostty · Monokai Pro");
+  assert.equal(view.currentTheme, view.baseline);
+  assert.deepEqual(view.setThemeCalls, []);
   assert.match(state.diagnostics.at(-1) ?? "", /cancelled.*TUI/i);
 
   view.setMode("tui");
@@ -1055,75 +961,31 @@ test("async apply rechecks direct Ghostty gating before OSC", async () => {
   assert.equal(state.writes.at(-1), resetSequence());
 });
 
-test("shutdown preserves a newer unrelated Pi theme", async () => {
+test("Ghostty lifecycle preserves an independently changed Pi theme", async () => {
   const state = fixture();
   const app = harness(state);
   const view = context();
   await app.start({}, view.ctx);
   await registered(app, "ghostty-theme").handler("Monokai Pro", view.ctx);
 
-  const external = createPiTheme(nativeTheme("External"), Theme as never);
-  view.setCurrentTheme(external);
-  await app.shutdown({}, view.ctx);
-
-  assert.equal(view.currentTheme, external);
-  assert.equal(state.writes.at(-1), resetSequence());
-});
-
-test("reset preserves an external takeover and keeps it across restart", async () => {
-  const state = fixture();
-  const app = harness(state);
-  const view = context();
-  await app.start({}, view.ctx);
-  await registered(app, "ghostty-theme").handler("Monokai Pro", view.ctx);
-
-  const external = createPiTheme(nativeTheme("External"), Theme as never);
-  view.setCurrentTheme(external);
-  await registered(app, "ghostty-theme").handler("reset", view.ctx);
-  assert.equal(view.currentTheme, external);
-  assert.equal(state.selection, undefined);
-
-  await app.start({}, view.ctx);
-  assert.equal(view.currentTheme, external);
-});
-
-test("reset restores an unregistered in-memory baseline", async () => {
-  const baseline = createPiTheme(
-    nativeTheme("Unregistered baseline"),
-    Theme as never,
-  );
-  const state = fixture();
-  const app = harness(state);
-  const view = context({
-    initialTheme: baseline,
-    getTheme: () => undefined,
-  });
-  await app.start({}, view.ctx);
-  await registered(app, "ghostty-theme").handler("Monokai Pro", view.ctx);
-  await registered(app, "ghostty-theme").handler("reset", view.ctx);
-
-  assert.equal(view.currentTheme, baseline);
-});
-
-test("reapplication after external takeover captures a new baseline", async () => {
-  const state = fixture();
-  const app = harness(state);
-  const view = context();
-  await app.start({}, view.ctx);
-  await registered(app, "ghostty-theme").handler("Monokai Pro", view.ctx);
-
-  const external = createPiTheme(nativeTheme("External"), Theme as never);
+  const external = piTheme("External", "#ff00ff");
   view.setCurrentTheme(external);
   await registered(app, "ghostty-theme").handler(
     "Black Metal (Bathory)",
     view.ctx,
   );
   await registered(app, "ghostty-theme").handler("reset", view.ctx);
+  await app.start({}, view.ctx);
+  await app.shutdown({}, view.ctx);
 
   assert.equal(view.currentTheme, external);
+  assert.deepEqual(view.setThemeCalls, []);
+  assert.equal(state.selection, undefined);
+  assert.equal(state.writes.length, 3);
+  assert.equal(state.writes.at(-1), resetSequence());
 });
 
-test("persistence deletion failure still restores both surfaces", async () => {
+test("persistence deletion failure still restores the terminal", async () => {
   const state = fixture("Monokai Pro");
   state.host.saveSelection = async (name) => {
     if (name === undefined) {
@@ -1209,35 +1071,6 @@ test("startup reports persisted-state errors and reset clears the issue", async 
   await registered(app, "ghostty-theme").handler("status", view.ctx);
   assert.doesNotMatch(view.notifications.at(-1)?.message ?? "", /issue:/);
   assert.equal(state.selection, undefined);
-});
-
-test("Pi restore failure is reported and retried at shutdown", async () => {
-  const baseline = baselineTheme();
-  let restoreAttempts = 0;
-  const state = fixture();
-  const app = harness(state);
-  const view = context({
-    initialTheme: baseline,
-    setThemeResult: (next) => {
-      if (next === baseline) {
-        restoreAttempts += 1;
-        if (restoreAttempts === 1) {
-          return { success: false, error: "Pi restore denied" };
-        }
-      }
-      return { success: true };
-    },
-  });
-  await app.start({}, view.ctx);
-  await registered(app, "ghostty-theme").handler("Monokai Pro", view.ctx);
-
-  await registered(app, "ghostty-theme").handler("reset", view.ctx);
-  assert.match(view.notifications.at(-1)?.message ?? "", /Pi restore denied/);
-  assert.equal(view.currentTheme.name, "Ghostty · Monokai Pro");
-
-  await app.shutdown({}, view.ctx);
-  assert.equal(restoreAttempts, 2);
-  assert.equal(view.currentTheme, baseline);
 });
 
 test("terminal reset failure is reported and retried at shutdown", async () => {
@@ -1345,7 +1178,7 @@ test("failed picker cancel reports the still-owned preview theme", async () => {
   assert.equal(state.writes.at(-1), resetSequence());
 });
 
-test("picker styling follows the live preview theme", async () => {
+test("picker styling stays on the Pi theme during Ghostty preview", async () => {
   const state = fixture();
   state.files.set(
     "/themes/Monokai Pro",
@@ -1376,23 +1209,16 @@ test("picker styling follows the live preview theme", async () => {
   await registered(app, "ghostty-theme").handler("", view.ctx);
 
   const initialAccent = view.baseline.getFgAnsi("accent");
-  const previewTheme = createPiTheme(
-    parseGhosttyTheme(
-      "Monokai Pro",
-      "/themes/Monokai Pro",
-      state.files.get("/themes/Monokai Pro") ?? "",
-    ),
-    Theme as never,
-  );
-  const previewAccent = previewTheme.getFgAnsi("accent");
+  const ghosttyDerivedAccent = "\u001b[38;2;1;2;3m";
   assert.ok(before.includes(initialAccent));
-  assert.ok(after.includes(previewAccent));
-  assert.ok(after.split(previewAccent).length - 1 >= 2);
-  assert.ok(after.includes(previewTheme.getFgAnsi("muted")));
-  assert.ok(after.includes(previewTheme.getFgAnsi("dim")));
-  assert.ok(noMatch.includes(previewTheme.getFgAnsi("warning")));
-  assert.notEqual(initialAccent, previewAccent);
+  assert.ok(after.includes(initialAccent));
+  assert.ok(after.split(initialAccent).length - 1 >= 2);
+  assert.ok(after.includes(view.baseline.getFgAnsi("muted")));
+  assert.ok(after.includes(view.baseline.getFgAnsi("dim")));
+  assert.ok(noMatch.includes(view.baseline.getFgAnsi("warning")));
+  assert.ok(!after.includes(ghosttyDerivedAccent));
   assert.equal(view.currentTheme, view.baseline);
+  assert.deepEqual(view.setThemeCalls, []);
 });
 
 test("picker render respects widths zero through eighty", async () => {

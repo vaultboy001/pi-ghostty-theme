@@ -1,7 +1,6 @@
 import type {
   ExtensionAPI,
   ExtensionContext,
-  Theme,
 } from "@earendil-works/pi-coding-agent";
 import { loadGhosttyThemeCatalog, type ThemeCatalogLoader } from "./catalog.js";
 import {
@@ -14,7 +13,6 @@ import {
   type ThemeSource,
   themeSequence,
 } from "./ghostty.js";
-import { createPiTheme, type ThemeConstructor } from "./pi-theme.js";
 import { showThemePicker } from "./picker.js";
 import {
   loadSavedSelection,
@@ -22,19 +20,6 @@ import {
   saveSavedSelection,
   writeToTerminal,
 } from "./storage.js";
-
-type DeferredTask = () => Promise<void> | void;
-
-const POST_RELOAD_SETTLE_MS = 250;
-
-function deferTask(task: DeferredTask, delayMs = 0): void {
-  if (delayMs > 0) {
-    const timer = setTimeout(() => void task(), delayMs);
-    timer.unref();
-    return;
-  }
-  setImmediate(() => void task());
-}
 
 export interface Host {
   env(): NodeJS.ProcessEnv;
@@ -44,7 +29,6 @@ export interface Host {
   writeDiagnostic?(value: string): void;
   loadSelection(): Promise<string | undefined>;
   saveSelection(name: string | undefined): Promise<void>;
-  defer?(task: DeferredTask, delayMs?: number): void;
 }
 
 const defaultHost: Host = {
@@ -55,7 +39,6 @@ const defaultHost: Host = {
   writeDiagnostic: (value) => process.stderr.write(value),
   loadSelection: loadSavedSelection,
   saveSelection: saveSavedSelection,
-  defer: deferTask,
 };
 
 export function inactiveReason(
@@ -91,8 +74,6 @@ export function createExtension(
   return function ghosttyTheme(pi: ExtensionAPI): void {
     let sources: ThemeSource[] = [];
     let activeName: string | undefined;
-    let baselinePiTheme: Theme | undefined;
-    let ownedPiTheme: Theme | undefined;
     let terminalOwned = false;
     let terminalOwnedName: string | undefined;
     let activation = "not started";
@@ -102,9 +83,6 @@ export function createExtension(
     let mutationGeneration = 0;
     let commitTail: Promise<void> = Promise.resolve();
     let running = false;
-    let pendingReloadReassertion:
-      | { name: string; token: MutationToken }
-      | undefined;
     const cache = new Map<string, GhosttyTheme>();
 
     const findSource = (name: string): ThemeSource | undefined => {
@@ -162,21 +140,18 @@ export function createExtension(
       if (cached) return cached;
       const parsed = parseGhosttyTheme(
         source.name,
-        source.path,
         await host.readTheme(source.path),
       );
       cache.set(source.path, parsed);
       return parsed;
     };
 
-    const prepare = async (name: string, ctx: ExtensionContext) => {
+    const loadThemeByName = async (name: string): Promise<GhosttyTheme> => {
       const source = findSource(name);
       if (!source) {
         throw new Error(`Ghostty theme ${quoteForUi(name)} was not found`);
       }
-      const native = await loadNativeTheme(source);
-      const ThemeClass = ctx.ui.theme.constructor as ThemeConstructor;
-      return { native, piTheme: createPiTheme(native, ThemeClass) };
+      return loadNativeTheme(source);
     };
 
     const describeError = (error: unknown): string =>
@@ -208,12 +183,6 @@ export function createExtension(
       return `Ghostty theme: ${activation}; theme ${quoteForUi(displayedName)}${issue}.`;
     };
 
-    const captureBaseline = (ctx: ExtensionContext): void => {
-      if (ownedPiTheme && ctx.ui.theme === ownedPiTheme) return;
-      ownedPiTheme = undefined;
-      baselinePiTheme = ctx.ui.theme;
-    };
-
     const restoreTerminal = (ctx: ExtensionContext): string | undefined => {
       previewGeneration += 1;
       if (!terminalOwned) {
@@ -232,73 +201,15 @@ export function createExtension(
       }
     };
 
-    const restoreBaseline = (ctx: ExtensionContext): string | undefined => {
-      if (!ownedPiTheme) {
-        baselinePiTheme = undefined;
-        return undefined;
-      }
-      if (ctx.ui.theme !== ownedPiTheme) {
-        ownedPiTheme = undefined;
-        baselinePiTheme = undefined;
-        return undefined;
-      }
-      if (!baselinePiTheme) return "the original Pi theme is unavailable";
-
-      try {
-        const result = ctx.ui.setTheme(baselinePiTheme);
-        if (!result.success) {
-          return escapeTerminalControls(
-            result.error ?? "Pi rejected the original theme",
-          );
-        }
-      } catch (error) {
-        return describeError(error);
-      }
-
-      ownedPiTheme = undefined;
-      baselinePiTheme = undefined;
-      return undefined;
-    };
-
-    const applyPrepared = (
-      prepared: Awaited<ReturnType<typeof prepare>>,
-      ctx: ExtensionContext,
-      options: { writeTerminal?: boolean } = {},
-    ): void => {
+    const applyTheme = (theme: GhosttyTheme, ctx: ExtensionContext): void => {
       const reason = inactiveReason(ctx.mode, host.tty(), host.env());
       if (reason) {
         activation = `inactive because ${reason}`;
         throw new Error(`theme application cancelled because ${reason}`);
       }
-      captureBaseline(ctx);
-      const wroteTerminal = options.writeTerminal !== false;
-      if (wroteTerminal) {
-        host.writeTerminal(themeSequence(prepared.native));
-        terminalOwned = true;
-        terminalOwnedName = prepared.native.name;
-      }
-
-      let result: ReturnType<ExtensionContext["ui"]["setTheme"]>;
-      try {
-        result = ctx.ui.setTheme(prepared.piTheme);
-      } catch (error) {
-        const terminalError = wroteTerminal ? restoreTerminal(ctx) : undefined;
-        const suffix = terminalError
-          ? `; terminal rollback failed: ${terminalError}`
-          : "";
-        throw new Error(`${describeError(error)}${suffix}`);
-      }
-      if (!result.success) {
-        const terminalError = wroteTerminal ? restoreTerminal(ctx) : undefined;
-        const suffix = terminalError
-          ? `; terminal rollback failed: ${terminalError}`
-          : "";
-        throw new Error(
-          `${escapeTerminalControls(result.error ?? "Pi rejected the derived theme")}${suffix}`,
-        );
-      }
-
-      ownedPiTheme = prepared.piTheme;
+      host.writeTerminal(themeSequence(theme));
+      terminalOwned = true;
+      terminalOwnedName = theme.name;
       lastIssue = undefined;
     };
 
@@ -306,65 +217,27 @@ export function createExtension(
       name: string,
       ctx: ExtensionContext,
       token: MutationToken,
-      options: {
-        persist?: boolean;
-        setActive?: boolean;
-        writeTerminal?: boolean;
-      } = {},
+      options: { persist?: boolean } = {},
     ): Promise<boolean> => {
-      const prepared = await prepare(name, ctx);
+      const theme = await loadThemeByName(name);
       if (!isMutationCurrent(token)) return false;
       const committed = await commitMutation(token, async () => {
-        applyPrepared(prepared, ctx, {
-          writeTerminal: options.writeTerminal,
-        });
-        if (options.setActive !== false) activeName = name;
+        applyTheme(theme, ctx);
+        activeName = name;
         if (options.persist) await host.saveSelection(name);
       });
       return committed.committed;
     };
 
-    const deferReloadReassertion = (ctx: ExtensionContext): void => {
-      const pending = pendingReloadReassertion;
-      pendingReloadReassertion = undefined;
-      if (!pending) return;
-
-      const reassertIfDisplaced = async (): Promise<void> => {
-        if (!isMutationCurrent(pending.token)) return;
-        if (ownedPiTheme && ctx.ui.theme === ownedPiTheme) return;
-        try {
-          await applyName(pending.name, ctx, pending.token, {
-            setActive: false,
-            writeTerminal: false,
-          });
-        } catch (error) {
-          if (!isMutationCurrent(pending.token)) return;
-          lastIssue = `post-reload reapply failed: ${describeError(error)}`;
-          report(ctx, `Ghostty theme: ${lastIssue}.`, "warning");
-        }
-      };
-
-      const defer = host.defer ?? deferTask;
-      defer(reassertIfDisplaced);
-      // Pi's auto/default theme paths can spend 100 ms detecting terminal
-      // appearance after resource discovery. This bounded guard catches that
-      // later takeover without polling or writing another terminal OSC batch.
-      defer(reassertIfDisplaced, POST_RELOAD_SETTLE_MS);
-    };
-
     interface ResetOutcome {
       persistenceError?: string;
       terminalError?: string;
-      piThemeError?: string;
     }
 
     const resetIssues = (outcome: ResetOutcome): string[] => {
       const issues: string[] = [];
       if (outcome.terminalError) {
         issues.push(`terminal restoration failed: ${outcome.terminalError}`);
-      }
-      if (outcome.piThemeError) {
-        issues.push(`Pi restoration failed: ${outcome.piThemeError}`);
       }
       if (outcome.persistenceError) {
         issues.push(
@@ -378,7 +251,6 @@ export function createExtension(
       const previousName = activeName;
       const outcome: ResetOutcome = {
         terminalError: restoreTerminal(ctx),
-        piThemeError: restoreBaseline(ctx),
       };
 
       try {
@@ -387,7 +259,7 @@ export function createExtension(
         outcome.persistenceError = describeError(error);
       }
 
-      activeName = terminalOwned || ownedPiTheme ? previousName : undefined;
+      activeName = terminalOwned ? previousName : undefined;
       const issues = resetIssues(outcome);
       lastIssue = issues.length
         ? `reset incomplete: ${issues.join("; ")}`
@@ -404,7 +276,7 @@ export function createExtension(
     };
 
     pi.registerCommand("ghostty-theme", {
-      description: "Choose and live-preview a synchronized Ghostty/Pi theme",
+      description: "Choose and live-preview a Ghostty terminal theme",
       getArgumentCompletions: (prefix) => {
         const query = prefix.trim().toLowerCase();
         const matches = sources.filter((source) =>
@@ -436,16 +308,10 @@ export function createExtension(
             report(
               ctx,
               `Ghostty theme reset incomplete: ${issues.join("; ")}.`,
-              committed.value.terminalError || committed.value.piThemeError
-                ? "error"
-                : "warning",
+              committed.value.terminalError ? "error" : "warning",
             );
           } else {
-            report(
-              ctx,
-              "Ghostty theme reset to terminal and Pi defaults.",
-              "info",
-            );
+            report(ctx, "Ghostty theme reset to terminal defaults.", "info");
           }
           return;
         }
@@ -457,7 +323,6 @@ export function createExtension(
             const discovered = await discoverSources();
             if (!isMutationCurrent(token)) return;
             sources = discovered;
-            cache.clear();
           } catch (error) {
             if (!isMutationCurrent(token)) return;
             lastIssue = describeError(error);
@@ -483,7 +348,7 @@ export function createExtension(
               return;
             }
             if (isMutationCurrent(token)) {
-              report(ctx, `Ghostty and Pi now use ${activeName}.`, "info");
+              report(ctx, `Ghostty now uses ${activeName}.`, "info");
             }
           } catch (error) {
             if (!isMutationCurrent(token)) return;
@@ -501,8 +366,8 @@ export function createExtension(
           activeName,
           (name) => {
             const generation = ++previewGeneration;
-            void prepare(name, ctx)
-              .then(async (prepared) => {
+            void loadThemeByName(name)
+              .then(async (theme) => {
                 if (
                   !pickerOpen ||
                   !isMutationCurrent(token) ||
@@ -510,7 +375,7 @@ export function createExtension(
                 ) {
                   return;
                 }
-                await commitMutation(token, () => applyPrepared(prepared, ctx));
+                await commitMutation(token, () => applyTheme(theme, ctx));
               })
               .catch((error) => {
                 if (
@@ -534,8 +399,7 @@ export function createExtension(
             } else {
               const committed = await commitMutation(token, () => {
                 const terminalError = restoreTerminal(ctx);
-                const piThemeError = restoreBaseline(ctx);
-                const issues = resetIssues({ terminalError, piThemeError });
+                const issues = resetIssues({ terminalError });
                 if (issues.length) {
                   throw new Error(
                     `cancel cleanup incomplete: ${issues.join("; ")}`,
@@ -551,7 +415,7 @@ export function createExtension(
             return;
           }
           if (isMutationCurrent(token)) {
-            report(ctx, `Ghostty and Pi now use ${activeName}.`, "info");
+            report(ctx, `Ghostty now uses ${activeName}.`, "info");
           }
         } catch (error) {
           if (!isMutationCurrent(token)) return;
@@ -561,23 +425,20 @@ export function createExtension(
       },
     });
 
-    pi.on("session_start", async (event, ctx) => {
+    pi.on("session_start", async (_event, ctx) => {
       running = false;
       lifecycleGeneration += 1;
       invalidateMutations();
-      pendingReloadReassertion = undefined;
       await commitTail;
 
       const previousName = activeName;
       const startupCleanupIssues = resetIssues({
         terminalError: restoreTerminal(ctx),
-        piThemeError: restoreBaseline(ctx),
       });
       running = true;
       sources = [];
       cache.clear();
-      activeName = terminalOwned || ownedPiTheme ? previousName : undefined;
-      if (!ownedPiTheme) baselinePiTheme = undefined;
+      activeName = terminalOwned ? previousName : undefined;
       lastIssue = startupCleanupIssues.length
         ? `startup cleanup incomplete: ${startupCleanupIssues.join("; ")}`
         : undefined;
@@ -592,7 +453,6 @@ export function createExtension(
         const discovered = await discoverSources();
         if (!isMutationCurrent(token)) return;
         sources = discovered;
-        cache.clear();
         const saved = await host.loadSelection();
         if (!isMutationCurrent(token) || !saved) return;
         const savedSource = findSource(saved);
@@ -608,13 +468,7 @@ export function createExtension(
           });
           return;
         }
-        const applied = await applyName(savedSource.name, ctx, token);
-        if (applied && event.reason === "reload" && isMutationCurrent(token)) {
-          pendingReloadReassertion = {
-            name: savedSource.name,
-            token,
-          };
-        }
+        await applyName(savedSource.name, ctx, token);
       } catch (error) {
         if (!isMutationCurrent(token)) return;
         lastIssue = describeError(error);
@@ -622,18 +476,12 @@ export function createExtension(
       }
     });
 
-    pi.on("resources_discover", (event, ctx) => {
-      if (event.reason === "reload") deferReloadReassertion(ctx);
-    });
-
     pi.on("session_shutdown", async (_event, ctx) => {
       running = false;
       lifecycleGeneration += 1;
       invalidateMutations();
-      pendingReloadReassertion = undefined;
       await commitTail;
       restoreTerminal(ctx);
-      restoreBaseline(ctx);
     });
   };
 }

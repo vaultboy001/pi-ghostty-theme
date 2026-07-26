@@ -61,13 +61,9 @@ type BasePalette = [
 
 export interface GhosttyTheme {
   name: string;
-  path: string;
   background: string;
   foreground: string;
   cursor: string;
-  cursorText: string;
-  selectionBackground: string;
-  selectionForeground: string;
   palette: BasePalette;
 }
 
@@ -105,11 +101,7 @@ function normalizeGhosttyColor(value: string | undefined): string | undefined {
   return X11_COLORS.get(key);
 }
 
-export function parseGhosttyTheme(
-  name: string,
-  path: string,
-  content: string,
-): GhosttyTheme {
+export function parseGhosttyTheme(name: string, content: string): GhosttyTheme {
   const values = new Map<string, string>();
   const palette = new Map<number, string>();
 
@@ -126,7 +118,7 @@ export function parseGhosttyTheme(
       if (paletteSeparator < 0) continue;
       const index = Number(value.slice(0, paletteSeparator).trim());
       const color = normalizeGhosttyColor(value.slice(paletteSeparator + 1));
-      if (Number.isInteger(index) && index >= 0 && index <= 255 && color) {
+      if (Number.isInteger(index) && index >= 0 && index <= 15 && color) {
         palette.set(index, color);
       }
       continue;
@@ -149,16 +141,9 @@ export function parseGhosttyTheme(
 
   return {
     name,
-    path,
     background,
     foreground,
     cursor: normalizeGhosttyColor(values.get("cursor-color")) ?? foreground,
-    cursorText: normalizeGhosttyColor(values.get("cursor-text")) ?? background,
-    selectionBackground:
-      normalizeGhosttyColor(values.get("selection-background")) ??
-      basePalette[8],
-    selectionForeground:
-      normalizeGhosttyColor(values.get("selection-foreground")) ?? foreground,
     palette: basePalette,
   };
 }
