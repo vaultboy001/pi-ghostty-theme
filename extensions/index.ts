@@ -15,6 +15,7 @@ import {
 } from "./ghostty.js";
 import { showThemePicker } from "./picker.js";
 import {
+  loadPiThemeSetting,
   loadSavedSelection,
   readThemeFile,
   saveSavedSelection,
@@ -29,6 +30,7 @@ export interface Host {
   writeDiagnostic?(value: string): void;
   loadSelection(): Promise<string | undefined>;
   saveSelection(name: string | undefined): Promise<void>;
+  readPiThemeSetting(): Promise<string | undefined>;
 }
 
 const defaultHost: Host = {
@@ -39,6 +41,7 @@ const defaultHost: Host = {
   writeDiagnostic: (value) => process.stderr.write(value),
   loadSelection: loadSavedSelection,
   saveSelection: saveSavedSelection,
+  readPiThemeSetting: loadPiThemeSetting,
 };
 
 export function inactiveReason(
@@ -83,6 +86,9 @@ export function createExtension(
     let mutationGeneration = 0;
     let commitTail: Promise<void> = Promise.resolve();
     let running = false;
+    let pendingReloadTheme:
+      | { name: string; theme: GhosttyTheme; token: MutationToken }
+      | undefined;
     const cache = new Map<string, GhosttyTheme>();
 
     const findSource = (name: string): ThemeSource | undefined => {
@@ -96,6 +102,7 @@ export function createExtension(
       running && generation === lifecycleGeneration;
 
     const beginMutation = (): MutationToken => {
+      pendingReloadTheme = undefined;
       mutationGeneration += 1;
       previewGeneration += 1;
       return {
@@ -105,6 +112,7 @@ export function createExtension(
     };
 
     const invalidateMutations = (): void => {
+      pendingReloadTheme = undefined;
       mutationGeneration += 1;
       previewGeneration += 1;
     };
@@ -210,6 +218,7 @@ export function createExtension(
       host.writeTerminal(themeSequence(theme));
       terminalOwned = true;
       terminalOwnedName = theme.name;
+      activation = "active in the current Ghostty surface";
       lastIssue = undefined;
     };
 
@@ -227,6 +236,26 @@ export function createExtension(
         if (options.persist) await host.saveSelection(name);
       });
       return committed.committed;
+    };
+
+    const applyPendingReloadTheme = async (
+      ctx: ExtensionContext,
+    ): Promise<void> => {
+      const pending = pendingReloadTheme;
+      pendingReloadTheme = undefined;
+      if (!pending || !isMutationCurrent(pending.token)) return;
+
+      try {
+        const committed = await commitMutation(pending.token, () => {
+          applyTheme(pending.theme, ctx);
+          activeName = pending.name;
+        });
+        if (!committed.committed || !isMutationCurrent(pending.token)) return;
+      } catch (error) {
+        if (!isMutationCurrent(pending.token)) return;
+        lastIssue = `post-reload application failed: ${describeError(error)}`;
+        report(ctx, `Ghostty theme: ${lastIssue}.`, "warning");
+      }
     };
 
     interface ResetOutcome {
@@ -317,6 +346,7 @@ export function createExtension(
         }
 
         if (!ensureActive(ctx)) return;
+        const originalName = activeName ?? pendingReloadTheme?.name;
         const token = beginMutation();
         if (!sources.length) {
           try {
@@ -358,12 +388,11 @@ export function createExtension(
           return;
         }
 
-        const originalName = activeName;
         let pickerOpen = true;
         const result = await showThemePicker(
           ctx,
           sources,
-          activeName,
+          originalName,
           (name) => {
             const generation = ++previewGeneration;
             void loadThemeByName(name)
@@ -425,7 +454,7 @@ export function createExtension(
       },
     });
 
-    pi.on("session_start", async (_event, ctx) => {
+    pi.on("session_start", async (event, ctx) => {
       running = false;
       lifecycleGeneration += 1;
       invalidateMutations();
@@ -468,12 +497,35 @@ export function createExtension(
           });
           return;
         }
+        const savedTheme = await loadNativeTheme(savedSource);
+        if (!isMutationCurrent(token)) return;
+        if (event.reason === "reload") {
+          // Pi resolves its own theme after extension session_start on reload.
+          // Pi only detects the terminal background (and may persist the
+          // result) when it has no explicit theme setting, so that is the
+          // only case that must defer. With an explicit or automatic Pi
+          // theme, the saved Ghostty choice can reapply immediately.
+          const piThemeSetting = await host.readPiThemeSetting();
+          if (!isMutationCurrent(token)) return;
+          if (!piThemeSetting) {
+            pendingReloadTheme = {
+              name: savedSource.name,
+              theme: savedTheme,
+              token,
+            };
+            return;
+          }
+        }
         await applyName(savedSource.name, ctx, token);
       } catch (error) {
         if (!isMutationCurrent(token)) return;
         lastIssue = describeError(error);
         report(ctx, `Ghostty theme: ${lastIssue}.`, "warning");
       }
+    });
+
+    pi.on("input", async (event, ctx) => {
+      if (event.source === "interactive") await applyPendingReloadTheme(ctx);
     });
 
     pi.on("session_shutdown", async (_event, ctx) => {

@@ -14,9 +14,58 @@ import { getAgentDir } from "@earendil-works/pi-coding-agent";
 const MAX_THEME_BYTES = 1024 * 1024;
 const MAX_STATE_BYTES = 8 * 1024;
 const STATE_FILE = "ghostty-theme.json";
+const PI_SETTINGS_FILE = "settings.json";
 
 function statePath(): string {
   return join(getAgentDir(), STATE_FILE);
+}
+
+function piSettingsPath(): string {
+  return join(getAgentDir(), PI_SETTINGS_FILE);
+}
+
+/**
+ * Read Pi's own theme setting (read-only) to decide reload timing.
+ *
+ * Any failure (missing file, oversized, invalid JSON, unsupported shape)
+ * reports no theme so the extension defers to the pending branch, which is
+ * the safe default: Pi then resolves its theme against terminal defaults.
+ */
+export async function loadPiThemeSetting(): Promise<string | undefined> {
+  return loadPiThemeSettingFile(piSettingsPath());
+}
+
+export async function loadPiThemeSettingFile(
+  path: string,
+): Promise<string | undefined> {
+  let info: Awaited<ReturnType<typeof stat>>;
+  try {
+    info = await stat(path);
+  } catch {
+    return undefined;
+  }
+  if (!info.isFile() || info.size > MAX_THEME_BYTES) return undefined;
+
+  let content: string;
+  try {
+    content = await readFile(path, "utf8");
+  } catch {
+    return undefined;
+  }
+  if (Buffer.byteLength(content) > MAX_THEME_BYTES) return undefined;
+
+  let value: unknown;
+  try {
+    value = JSON.parse(content);
+  } catch {
+    return undefined;
+  }
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return undefined;
+  }
+  const theme = (value as { theme?: unknown }).theme;
+  if (typeof theme !== "string" || !theme.trim()) return undefined;
+  return theme.trim();
 }
 
 export async function readThemeFile(path: string): Promise<string> {

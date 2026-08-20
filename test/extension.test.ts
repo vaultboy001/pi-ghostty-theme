@@ -22,7 +22,11 @@ import {
   type Host,
   inactiveReason,
 } from "../extensions/index.js";
-import { loadSelectionFile, saveSelectionFile } from "../extensions/storage.js";
+import {
+  loadPiThemeSettingFile,
+  loadSelectionFile,
+  saveSelectionFile,
+} from "../extensions/storage.js";
 import { X11_COLORS } from "../extensions/x11-colors.js";
 
 const COLORS = [
@@ -120,6 +124,7 @@ function fixture(selection?: string): Fixture {
       value.selection = name;
       value.saves.push(name);
     },
+    readPiThemeSetting: async () => undefined,
   };
   return value;
 }
@@ -276,11 +281,14 @@ function harness(state: Fixture, options: HarnessOptions = {}) {
   } as unknown as ExtensionAPI;
   createExtension(state.host, loadCatalog)(pi);
   const start = events.get("session_start");
+  const input = events.get("input");
   const shutdown = events.get("session_shutdown");
   assert.ok(start);
+  assert.ok(input);
   assert.ok(shutdown);
   return {
     start,
+    input,
     shutdown,
     commands,
     get catalogCalls() {
@@ -509,22 +517,135 @@ test("applies a saved Ghostty theme without changing the Pi theme", async () => 
   assert.equal(view.currentTheme, baseline);
 });
 
-test("reload resets and reapplies only the Ghostty terminal theme", async () => {
+test("reload keeps Ghostty defaults until the next interactive input", async () => {
   const state = fixture("Monokai Pro");
   const app = harness(state);
   const view = context();
-  const baseline = view.currentTheme;
 
   await app.start({ reason: "startup" }, view.ctx);
   await app.shutdown({ reason: "reload" }, view.ctx);
   await app.start({ reason: "reload" }, view.ctx);
+
+  const restoredPiTheme = piTheme("Restored after reload", "#ff00ff");
+  view.setCurrentTheme(restoredPiTheme);
+  assert.deepEqual(state.writes, [
+    themeSequence(nativeTheme()),
+    resetSequence(),
+  ]);
+
+  await app.input({ source: "extension" }, view.ctx);
+  assert.equal(state.writes.length, 2);
+  await app.input({ source: "interactive" }, view.ctx);
 
   assert.deepEqual(state.writes, [
     themeSequence(nativeTheme()),
     resetSequence(),
     themeSequence(nativeTheme()),
   ]);
-  assert.equal(view.currentTheme, baseline);
+  assert.equal(view.currentTheme, restoredPiTheme);
+  assert.deepEqual(view.setThemeCalls, []);
+});
+
+test("reload reapplies the saved Ghostty theme immediately with an explicit Pi theme", async () => {
+  const state = fixture("Monokai Pro");
+  state.host.readPiThemeSetting = async () => "light";
+  const app = harness(state);
+  const view = context();
+
+  await app.start({ reason: "startup" }, view.ctx);
+  await app.shutdown({ reason: "reload" }, view.ctx);
+  await app.start({ reason: "reload" }, view.ctx);
+
+  const restoredPiTheme = piTheme("Restored after reload", "#ff00ff");
+  view.setCurrentTheme(restoredPiTheme);
+  assert.deepEqual(state.writes, [
+    themeSequence(nativeTheme()),
+    resetSequence(),
+    themeSequence(nativeTheme()),
+  ]);
+
+  await app.input({ source: "interactive" }, view.ctx);
+  assert.equal(state.writes.length, 3);
+  assert.equal(view.currentTheme, restoredPiTheme);
+  assert.deepEqual(view.setThemeCalls, []);
+});
+
+test("reload reapplies the saved Ghostty theme immediately with an automatic Pi theme pair", async () => {
+  const state = fixture("Monokai Pro");
+  state.host.readPiThemeSetting = async () => "light/dark";
+  const app = harness(state);
+  const view = context();
+
+  await app.start({ reason: "reload" }, view.ctx);
+
+  assert.deepEqual(state.writes, [themeSequence(nativeTheme())]);
+  assert.equal(view.currentTheme, view.baseline);
+  assert.deepEqual(view.setThemeCalls, []);
+});
+
+test("reload treats a Pi settings read failure as an error and does not pend", async () => {
+  const state = fixture("Monokai Pro");
+  state.host.readPiThemeSetting = async () => {
+    throw new Error("settings unreadable");
+  };
+  const app = harness(state);
+  const view = context();
+
+  await app.start({ reason: "reload" }, view.ctx);
+  assert.deepEqual(state.writes, []);
+  assert.match(view.notifications.at(-1)?.message ?? "", /settings unreadable/);
+
+  await app.input({ source: "interactive" }, view.ctx);
+  assert.deepEqual(state.writes, []);
+  assert.deepEqual(view.setThemeCalls, []);
+});
+
+test("shutdown cancels a pending reload theme application", async () => {
+  const state = fixture("Monokai Pro");
+  const app = harness(state);
+  const view = context();
+
+  await app.start({ reason: "reload" }, view.ctx);
+  await app.shutdown({ reason: "quit" }, view.ctx);
+  await app.input({ source: "interactive" }, view.ctx);
+
+  assert.deepEqual(state.writes, []);
+  assert.equal(view.currentTheme, view.baseline);
+  assert.deepEqual(view.setThemeCalls, []);
+});
+
+test("a newer command supersedes a pending reload theme", async () => {
+  const state = fixture("Monokai Pro");
+  const app = harness(state);
+  const view = context();
+
+  await app.start({ reason: "reload" }, view.ctx);
+  await registered(app, "ghostty-theme").handler(
+    "Black Metal (Bathory)",
+    view.ctx,
+  );
+  await app.input({ source: "interactive" }, view.ctx);
+
+  assert.equal(state.selection, "Black Metal (Bathory)");
+  assert.deepEqual(state.writes, [
+    themeSequence(nativeTheme("Black Metal (Bathory)")),
+  ]);
+  assert.equal(view.currentTheme, view.baseline);
+  assert.deepEqual(view.setThemeCalls, []);
+});
+
+test("picker cancel restores a pending saved reload theme", async () => {
+  const state = fixture("Monokai Pro");
+  const app = harness(state);
+  const view = context({ customSelection: null });
+
+  await app.start({ reason: "reload" }, view.ctx);
+  await registered(app, "ghostty-theme").handler("", view.ctx);
+  await app.input({ source: "interactive" }, view.ctx);
+
+  assert.equal(state.selection, "Monokai Pro");
+  assert.deepEqual(state.writes, [themeSequence(nativeTheme())]);
+  assert.equal(view.currentTheme, view.baseline);
   assert.deepEqual(view.setThemeCalls, []);
 });
 
@@ -1028,6 +1149,44 @@ test("persisted state loader bounds and validates the state file", async () => {
     await rm(path);
     await mkdir(path);
     await assert.rejects(loadSelectionFile(path), /not a regular file/);
+  } finally {
+    await rm(directory, { force: true, recursive: true });
+  }
+});
+
+test("Pi theme setting loader degrades safely on every failure mode", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "pi-ghostty-settings-"));
+  const path = join(directory, "settings.json");
+  try {
+    assert.equal(await loadPiThemeSettingFile(path), undefined);
+
+    await writeFile(path, '{"theme":"light"}\n');
+    assert.equal(await loadPiThemeSettingFile(path), "light");
+
+    await writeFile(path, '{"theme":"light/dark"}\n');
+    assert.equal(await loadPiThemeSettingFile(path), "light/dark");
+
+    await writeFile(path, '{"theme":"  Nord Light  "}\n');
+    assert.equal(await loadPiThemeSettingFile(path), "Nord Light");
+
+    await writeFile(path, '{"theme":""}\n');
+    assert.equal(await loadPiThemeSettingFile(path), undefined);
+
+    await writeFile(path, '{"theme":null}\n');
+    assert.equal(await loadPiThemeSettingFile(path), undefined);
+
+    await writeFile(path, '{"theme":["light"]}\n');
+    assert.equal(await loadPiThemeSettingFile(path), undefined);
+
+    await writeFile(path, "{not json");
+    assert.equal(await loadPiThemeSettingFile(path), undefined);
+
+    await writeFile(path, "x".repeat(1024 * 1024 + 1));
+    assert.equal(await loadPiThemeSettingFile(path), undefined);
+
+    await rm(path);
+    await mkdir(path);
+    assert.equal(await loadPiThemeSettingFile(path), undefined);
   } finally {
     await rm(directory, { force: true, recursive: true });
   }
