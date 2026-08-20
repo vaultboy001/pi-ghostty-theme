@@ -1,4 +1,6 @@
 import { spawn } from "node:child_process";
+import { accessSync, constants } from "node:fs";
+import { join } from "node:path";
 
 const MAX_CATALOG_BYTES = 1024 * 1024;
 const MAX_CATALOG_DIAGNOSTIC_BYTES = 8 * 1024;
@@ -127,9 +129,38 @@ export function runBoundedCommand(
   });
 }
 
+const GHOSTTY_BINARY_CANDIDATES = [
+  "/Applications/Ghostty.app/Contents/MacOS/ghostty",
+  "/opt/homebrew/bin/ghostty",
+  "/usr/local/bin/ghostty",
+  "/usr/bin/ghostty",
+];
+
+/**
+ * Resolve the ghostty CLI. Plain Ghostty shells get its bin dir injected
+ * into PATH, but processes started elsewhere (e.g. a herdr pane inheriting
+ * the detached herdr server's environment) do not, so probe well-known
+ * install locations before falling back to PATH lookup.
+ */
+function resolveGhosttyCommand(env: NodeJS.ProcessEnv = process.env): string {
+  const fromBinDir = env.GHOSTTY_BIN_DIR
+    ? join(env.GHOSTTY_BIN_DIR, "ghostty")
+    : undefined;
+  for (const candidate of [fromBinDir, ...GHOSTTY_BINARY_CANDIDATES]) {
+    if (!candidate) continue;
+    try {
+      accessSync(candidate, constants.X_OK);
+      return candidate;
+    } catch {
+      // Keep probing the remaining candidates.
+    }
+  }
+  return "ghostty";
+}
+
 export async function loadGhosttyThemeCatalog(): Promise<string> {
   const result = await runBoundedCommand(
-    "ghostty",
+    resolveGhosttyCommand(),
     ["+list-themes", "--plain", "--path"],
     {
       timeoutMs: CATALOG_TIMEOUT_MS,
