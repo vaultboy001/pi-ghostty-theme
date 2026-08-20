@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import type {
   ExtensionAPI,
   ExtensionContext,
@@ -44,6 +45,66 @@ const defaultHost: Host = {
   readPiThemeSetting: loadPiThemeSetting,
 };
 
+const HERDR_DETECTION_CACHE_MS = 30_000;
+let herdrDetectionCache: { at: number; ghostty: boolean } | undefined;
+
+/**
+ * Herdr panes inherit their environment from the detached herdr server, so
+ * TERM_PROGRAM/TERM never reflect the terminal actually rendering the pane.
+ * The herdr client runs inside the real terminal, so inspect its process
+ * environment instead. Sequences written by panes pass through to it.
+ */
+function herdrClientUsesGhostty(now = Date.now()): boolean {
+  if (
+    herdrDetectionCache &&
+    now - herdrDetectionCache.at < HERDR_DETECTION_CACHE_MS
+  ) {
+    return herdrDetectionCache.ghostty;
+  }
+  const ghostty = detectHerdrClientGhostty();
+  herdrDetectionCache = { at: now, ghostty };
+  return ghostty;
+}
+
+function detectHerdrClientGhostty(): boolean {
+  if (process.platform !== "darwin" && process.platform !== "linux") {
+    return false;
+  }
+  let listing: string;
+  try {
+    listing = execFileSync("ps", ["eww", "-A", "-o", "args="], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+      timeout: 3_000,
+    });
+  } catch {
+    return false;
+  }
+  for (const line of listing.split("\n")) {
+    if (!isHerdrClientCommand(line)) continue;
+    const program = /(?:^|\s)TERM_PROGRAM=([^\s]+)/.exec(line)?.[1];
+    const term = /(?:^|\s)TERM=([^\s]+)/.exec(line)?.[1];
+    if (
+      program?.trim().toLowerCase() === "ghostty" ||
+      term?.trim().toLowerCase() === "xterm-ghostty" ||
+      term?.trim().toLowerCase() === "ghostty"
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function isHerdrClientCommand(line: string): boolean {
+  const tokens = line.trim().split(/\s+/);
+  const [binary, next] = tokens;
+  if (!binary || !/(^|\/)herdr$/.test(binary)) return false;
+  // A bare word after the binary is a subcommand ("server", "api", ...);
+  // the client runs as just "herdr" with optional flags.
+  if (next && !next.startsWith("-") && !next.includes("=")) return false;
+  return true;
+}
+
 export function inactiveReason(
   mode: string,
   tty: boolean,
@@ -55,10 +116,11 @@ export function inactiveReason(
   if (env.STY?.trim()) return "GNU screen is unsupported";
   const program = env.TERM_PROGRAM?.trim().toLowerCase();
   const term = env.TERM?.trim().toLowerCase();
-  if (program !== "ghostty" && term !== "xterm-ghostty" && term !== "ghostty") {
-    return "the terminal is not Ghostty";
+  if (program === "ghostty" || term === "xterm-ghostty" || term === "ghostty") {
+    return undefined;
   }
-  return undefined;
+  if (env.HERDR_ENV && herdrClientUsesGhostty()) return undefined;
+  return "the terminal is not Ghostty";
 }
 
 type NoticeLevel = "info" | "warning" | "error";
