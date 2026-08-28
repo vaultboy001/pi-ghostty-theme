@@ -78,7 +78,7 @@ A Ghostty change can still affect terminal defaults used by Pi—for example the
 
 1. Ghostty supplies the theme catalog through `ghostty +list-themes --plain --path`. The fixed-argument subprocess has a five-second timeout, captures at most 1 MiB of stdout and 8 KiB of stderr, and is force-killed if it ignores termination.
 2. The selected native theme file supplies background, foreground, cursor, and ANSI colors 0–15 as six-digit RGB values or Ghostty-supported named X11 colors. Named colors are normalized to RGB before OSC generation.
-3. The extension sends one OSC batch to the current Ghostty surface. It does not call Pi's theme API.
+3. The extension sends one OSC batch to the current Ghostty surface. It does not call Pi's theme API. Inside Herdr, pane OSC is consumed by Herdr's embedded terminal (so Pi's own UI updates). The extension also writes that OSC to the Herdr client's Ghostty TTY and live-recolors Herdr chrome through `[theme.custom]` plus `herdr server reload-config`, so the window you are looking at previews the theme. `/ghostty-theme reset` restores the previous Herdr chrome tokens. It never changes Herdr's `theme.name`.
 4. The selected name is stored in `~/.pi/agent/ghostty-theme.json` and reapplied after Pi resolves its own theme. After `/reload` with no explicit Pi theme setting, the preloaded choice remains pending until the next submitted interactive input or explicit Ghostty-theme command. A missing file is normal; corrupt, oversized, non-regular, or unreadable state is reported and skipped.
 5. Shutdown waits for mutations already committing, invalidates pending reads, previews, and reload application, and resets the terminal color overrides.
 
@@ -86,14 +86,14 @@ There is no polling loop, periodic reassertion, copied theme catalog, Pi setting
 
 ## Scope and limitations
 
-- Changes apply to the Ghostty tab or pane running Pi, not every Ghostty window.
+- Changes apply to the Ghostty tab or pane running Pi, not every Ghostty window. In a Ghostty → Herdr → Pi setup, live preview also recolors Herdr chrome in that client; other Herdr clients are left unchanged.
 - Ghostty's runtime color protocol covers background, foreground, cursor, and the ANSI palette. It does not expose a per-surface native-theme command, so selection colors, opacity, images, padding, fonts, and window chrome are not changed.
 - Pi themes remain independent. Selecting or previewing a Pi theme does not change the saved Ghostty theme, and selecting a Ghostty theme does not change Pi's theme.
 - Immediately after `/reload`, Ghostty stays on its configured defaults only while Pi has no explicit theme setting; the saved Ghostty choice then returns on the next submitted interactive input or explicit `/ghostty-theme` command. With an explicit Pi theme (including automatic light/dark pairs), the saved Ghostty choice returns immediately after reload.
 - Pi automatic light/dark pairs use Ghostty's system color-scheme report when available. On a Ghostty build or platform without that report, Pi may fall back to the current OSC 11 background; explicit Pi themes remain independent.
 - Theme names containing C0, DEL, or C1 terminal-control characters are ignored. The catalog parser also requires the displayed name to match the source filename, preventing newline-based record injection.
 - Theme colors accept six-digit RGB and Ghostty's named X11 colors. CSS color functions, dynamic values such as `cell-foreground`, and unknown names are rejected.
-- OSC overrides are terminal state. A crash or `SIGKILL` can prevent cleanup; closing the surface or reloading Ghostty configuration restores configured defaults.
+- OSC overrides are terminal state. A crash or `SIGKILL` can prevent cleanup; closing the surface or reloading Ghostty configuration restores configured defaults. Inside Herdr, chrome tokens are written to `[theme.custom]` with a backup at `~/.pi/agent/ghostty-herdr-chrome.json`; `/ghostty-theme reset` restores them. A crash can leave Herdr chrome on the last preview until reset or the next Pi session restore.
 - The extension stays inactive outside Pi's TUI, when stdout is not a TTY, in non-Ghostty terminals, and under tmux or GNU screen. It emits no OSC bytes in JSON, RPC, or print modes.
 - Custom Ghostty themes are configuration files. Only select themes you trust.
 

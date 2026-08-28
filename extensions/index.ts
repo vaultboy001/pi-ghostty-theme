@@ -1,4 +1,3 @@
-import { execFileSync } from "node:child_process";
 import type {
   ExtensionAPI,
   ExtensionContext,
@@ -14,6 +13,11 @@ import {
   type ThemeSource,
   themeSequence,
 } from "./ghostty.js";
+import {
+  herdrClientUsesGhostty,
+  syncHerdrChrome,
+  writeToHerdrHostTerminals,
+} from "./herdr.js";
 import { showThemePicker } from "./picker.js";
 import {
   loadPiThemeSetting,
@@ -28,10 +32,13 @@ export interface Host {
   tty(): boolean;
   readTheme(path: string): Promise<string>;
   writeTerminal(value: string): void;
+  writeHostTerminal?(value: string): void;
   writeDiagnostic?(value: string): void;
   loadSelection(): Promise<string | undefined>;
   saveSelection(name: string | undefined): Promise<void>;
   readPiThemeSetting(): Promise<string | undefined>;
+  herdrClientUsesGhostty?(): boolean;
+  syncHerdrChrome?(theme: GhosttyTheme | undefined): Promise<void>;
 }
 
 const defaultHost: Host = {
@@ -39,76 +46,26 @@ const defaultHost: Host = {
   tty: () => process.stdout.isTTY === true,
   readTheme: readThemeFile,
   writeTerminal: writeToTerminal,
+  writeHostTerminal: writeToHerdrHostTerminals,
   writeDiagnostic: (value) => process.stderr.write(value),
   loadSelection: loadSavedSelection,
   saveSelection: saveSavedSelection,
   readPiThemeSetting: loadPiThemeSetting,
+  herdrClientUsesGhostty,
+  syncHerdrChrome,
 };
-
-const HERDR_DETECTION_CACHE_MS = 30_000;
-let herdrDetectionCache: { at: number; ghostty: boolean } | undefined;
 
 /**
  * Herdr panes inherit their environment from the detached herdr server, so
  * TERM_PROGRAM/TERM never reflect the terminal actually rendering the pane.
- * The herdr client runs inside the real terminal, so inspect its process
- * environment instead. Sequences written by panes pass through to it.
+ * The herdr client runs inside the real Ghostty window. Pane OSC is consumed
+ * by Herdr's embedded terminal; host OSC and chrome sync target that window.
  */
-function herdrClientUsesGhostty(now = Date.now()): boolean {
-  if (
-    herdrDetectionCache &&
-    now - herdrDetectionCache.at < HERDR_DETECTION_CACHE_MS
-  ) {
-    return herdrDetectionCache.ghostty;
-  }
-  const ghostty = detectHerdrClientGhostty();
-  herdrDetectionCache = { at: now, ghostty };
-  return ghostty;
-}
-
-function detectHerdrClientGhostty(): boolean {
-  if (process.platform !== "darwin" && process.platform !== "linux") {
-    return false;
-  }
-  let listing: string;
-  try {
-    listing = execFileSync("ps", ["eww", "-A", "-o", "args="], {
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "ignore"],
-      timeout: 3_000,
-    });
-  } catch {
-    return false;
-  }
-  for (const line of listing.split("\n")) {
-    if (!isHerdrClientCommand(line)) continue;
-    const program = /(?:^|\s)TERM_PROGRAM=([^\s]+)/.exec(line)?.[1];
-    const term = /(?:^|\s)TERM=([^\s]+)/.exec(line)?.[1];
-    if (
-      program?.trim().toLowerCase() === "ghostty" ||
-      term?.trim().toLowerCase() === "xterm-ghostty" ||
-      term?.trim().toLowerCase() === "ghostty"
-    ) {
-      return true;
-    }
-  }
-  return false;
-}
-
-function isHerdrClientCommand(line: string): boolean {
-  const tokens = line.trim().split(/\s+/);
-  const [binary, next] = tokens;
-  if (!binary || !/(^|\/)herdr$/.test(binary)) return false;
-  // A bare word after the binary is a subcommand ("server", "api", ...);
-  // the client runs as just "herdr" with optional flags.
-  if (next && !next.startsWith("-") && !next.includes("=")) return false;
-  return true;
-}
-
 export function inactiveReason(
   mode: string,
   tty: boolean,
   env: NodeJS.ProcessEnv,
+  herdrGhostty?: boolean,
 ): string | undefined {
   if (mode !== "tui") return "outside Pi TUI mode";
   if (!tty) return "stdout is not a TTY";
@@ -119,7 +76,9 @@ export function inactiveReason(
   if (program === "ghostty" || term === "xterm-ghostty" || term === "ghostty") {
     return undefined;
   }
-  if (env.HERDR_ENV && herdrClientUsesGhostty()) return undefined;
+  if (env.HERDR_ENV?.trim() && (herdrGhostty ?? herdrClientUsesGhostty())) {
+    return undefined;
+  }
   return "the terminal is not Ghostty";
 }
 
@@ -147,6 +106,8 @@ export function createExtension(
     let lifecycleGeneration = 0;
     let mutationGeneration = 0;
     let commitTail: Promise<void> = Promise.resolve();
+    let chromeTail: Promise<void> = Promise.resolve();
+    let chromeGeneration = 0;
     let running = false;
     let pendingReloadTheme:
       | { name: string; theme: GhosttyTheme; token: MutationToken }
@@ -177,6 +138,7 @@ export function createExtension(
       pendingReloadTheme = undefined;
       mutationGeneration += 1;
       previewGeneration += 1;
+      chromeGeneration += 1;
     };
 
     const isMutationCurrent = (token: MutationToken): boolean =>
@@ -229,6 +191,38 @@ export function createExtension(
         error instanceof Error ? error.message : String(error),
       );
 
+    const currentInactiveReason = (ctx: ExtensionContext): string | undefined =>
+      inactiveReason(
+        ctx.mode,
+        host.tty(),
+        host.env(),
+        host.herdrClientUsesGhostty?.(),
+      );
+
+    const emitSequence = (value: string): void => {
+      host.writeTerminal(value);
+      try {
+        host.writeHostTerminal?.(value);
+      } catch {
+        // Host OSC is best-effort; pane application still counts as success.
+      }
+    };
+
+    const queueChrome = (theme: GhosttyTheme | undefined): void => {
+      if (!host.syncHerdrChrome) return;
+      const generation = ++chromeGeneration;
+      chromeTail = chromeTail
+        .catch(() => undefined)
+        .then(async () => {
+          if (generation !== chromeGeneration) return;
+          try {
+            await host.syncHerdrChrome?.(theme);
+          } catch (error) {
+            lastIssue = `herdr chrome sync failed: ${describeError(error)}`;
+          }
+        });
+    };
+
     const report = (
       ctx: ExtensionContext,
       message: string,
@@ -259,10 +253,10 @@ export function createExtension(
         terminalOwnedName = undefined;
         return undefined;
       }
-      const reason = inactiveReason(ctx.mode, host.tty(), host.env());
+      const reason = currentInactiveReason(ctx);
       if (reason) return `restoration deferred because ${reason}`;
       try {
-        host.writeTerminal(resetSequence());
+        emitSequence(resetSequence());
         terminalOwned = false;
         terminalOwnedName = undefined;
         return undefined;
@@ -272,16 +266,17 @@ export function createExtension(
     };
 
     const applyTheme = (theme: GhosttyTheme, ctx: ExtensionContext): void => {
-      const reason = inactiveReason(ctx.mode, host.tty(), host.env());
+      const reason = currentInactiveReason(ctx);
       if (reason) {
         activation = `inactive because ${reason}`;
         throw new Error(`theme application cancelled because ${reason}`);
       }
-      host.writeTerminal(themeSequence(theme));
+      emitSequence(themeSequence(theme));
       terminalOwned = true;
       terminalOwnedName = theme.name;
       activation = "active in the current Ghostty surface";
       lastIssue = undefined;
+      queueChrome(theme);
     };
 
     const applyName = async (
@@ -297,6 +292,7 @@ export function createExtension(
         activeName = name;
         if (options.persist) await host.saveSelection(name);
       });
+      await chromeTail;
       return committed.committed;
     };
 
@@ -312,6 +308,7 @@ export function createExtension(
           applyTheme(pending.theme, ctx);
           activeName = pending.name;
         });
+        await chromeTail;
         if (!committed.committed || !isMutationCurrent(pending.token)) return;
       } catch (error) {
         if (!isMutationCurrent(pending.token)) return;
@@ -343,6 +340,8 @@ export function createExtension(
       const outcome: ResetOutcome = {
         terminalError: restoreTerminal(ctx),
       };
+      queueChrome(undefined);
+      await chromeTail;
 
       try {
         await host.saveSelection(undefined);
@@ -359,7 +358,7 @@ export function createExtension(
     };
 
     const ensureActive = (ctx: ExtensionContext): boolean => {
-      const reason = inactiveReason(ctx.mode, host.tty(), host.env());
+      const reason = currentInactiveReason(ctx);
       if (!reason) return true;
       activation = `inactive because ${reason}`;
       report(ctx, `Ghostty theme is ${activation}.`, "warning");
@@ -488,8 +487,10 @@ export function createExtension(
             if (originalName) {
               await applyName(originalName, ctx, token);
             } else {
-              const committed = await commitMutation(token, () => {
+              const committed = await commitMutation(token, async () => {
                 const terminalError = restoreTerminal(ctx);
+                queueChrome(undefined);
+                await chromeTail;
                 const issues = resetIssues({ terminalError });
                 if (issues.length) {
                   throw new Error(
@@ -533,7 +534,7 @@ export function createExtension(
       lastIssue = startupCleanupIssues.length
         ? `startup cleanup incomplete: ${startupCleanupIssues.join("; ")}`
         : undefined;
-      const reason = inactiveReason(ctx.mode, host.tty(), host.env());
+      const reason = currentInactiveReason(ctx);
       activation = reason
         ? `inactive because ${reason}`
         : "active in the current Ghostty surface";
@@ -545,7 +546,10 @@ export function createExtension(
         if (!isMutationCurrent(token)) return;
         sources = discovered;
         const saved = await host.loadSelection();
-        if (!isMutationCurrent(token) || !saved) return;
+        if (!isMutationCurrent(token) || !saved) {
+          queueChrome(undefined);
+          return;
+        }
         const savedSource = findSource(saved);
         if (!savedSource) {
           const issue = `saved theme ${quoteForUi(saved)} is no longer available`;
@@ -556,6 +560,8 @@ export function createExtension(
             } catch (error) {
               lastIssue += `; saved selection was not cleared and may reapply next startup: ${describeError(error)}`;
             }
+            queueChrome(undefined);
+            await chromeTail;
           });
           return;
         }
@@ -596,6 +602,8 @@ export function createExtension(
       invalidateMutations();
       await commitTail;
       restoreTerminal(ctx);
+      queueChrome(undefined);
+      await chromeTail;
     });
   };
 }

@@ -320,6 +320,24 @@ test("activates only in a direct Ghostty TUI", () => {
     inactiveReason("tui", true, { TERM: "xterm-256color" }) ?? "",
     /not Ghostty/,
   );
+  assert.equal(
+    inactiveReason(
+      "tui",
+      true,
+      { HERDR_ENV: "1", TERM: "xterm-256color" },
+      true,
+    ),
+    undefined,
+  );
+  assert.match(
+    inactiveReason(
+      "tui",
+      true,
+      { HERDR_ENV: "1", TERM: "xterm-256color" },
+      false,
+    ) ?? "",
+    /not Ghostty/,
+  );
 });
 
 test("bounded process capture returns stdout, stderr, and exit metadata", async () => {
@@ -689,6 +707,36 @@ test("direct command applies and persists a named theme", async () => {
     "mono",
   );
   assert.equal(completions?.[0]?.value, "Monokai Pro");
+});
+
+test("Herdr host OSC and chrome follow Ghostty theme apply and reset", async () => {
+  const state = fixture();
+  const hostWrites: string[] = [];
+  const chrome: Array<string | undefined> = [];
+  state.host.env = () => ({
+    TERM_PROGRAM: "ghostty",
+    TERM: "xterm-ghostty",
+    HERDR_ENV: "1",
+  });
+  state.host.herdrClientUsesGhostty = () => true;
+  state.host.writeHostTerminal = (value) => hostWrites.push(value);
+  state.host.syncHerdrChrome = async (theme) => {
+    chrome.push(theme?.name);
+  };
+  const app = harness(state);
+  const view = context();
+  await app.start({}, view.ctx);
+
+  await registered(app, "ghostty-theme").handler("Monokai Pro", view.ctx);
+  const applied = themeSequence(nativeTheme());
+  assert.equal(state.writes.at(-1), applied);
+  assert.equal(hostWrites.at(-1), applied);
+  assert.deepEqual(chrome, [undefined, "Monokai Pro"]);
+
+  await registered(app, "ghostty-theme").handler("reset", view.ctx);
+  assert.equal(state.writes.at(-1), resetSequence());
+  assert.equal(hostWrites.at(-1), resetSequence());
+  assert.equal(chrome.at(-1), undefined);
 });
 
 test("newer direct apply wins over an older delayed apply", async () => {
