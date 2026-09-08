@@ -388,26 +388,28 @@ async function readText(path: string): Promise<string | undefined> {
   }
 }
 
-async function loadChromeBackup(
-  path: string,
-): Promise<ChromeBackup | undefined> {
+type ChromeBackupLoad =
+  | { ok: true; backup: ChromeBackup | undefined }
+  | { ok: false; reason: string };
+
+async function loadChromeBackup(path: string): Promise<ChromeBackupLoad> {
   const content = await readText(path);
-  if (!content?.trim()) return undefined;
+  if (!content?.trim()) return { ok: true, backup: undefined };
   let value: unknown;
   try {
     value = JSON.parse(content);
   } catch {
-    return undefined;
+    return { ok: false, reason: "chrome backup contains invalid JSON" };
   }
   if (!value || typeof value !== "object" || Array.isArray(value)) {
-    return undefined;
+    return { ok: false, reason: "chrome backup has an unsupported format" };
   }
   const backup: ChromeBackup = {};
   for (const key of MANAGED_CHROME_KEYS) {
     const entry = (value as Record<string, unknown>)[key];
     if (typeof entry === "string") backup[key] = entry;
   }
-  return backup;
+  return { ok: true, backup };
 }
 
 async function saveChromeBackup(
@@ -454,7 +456,14 @@ export async function syncHerdrChrome(
   const original = await readText(configPath);
   if (original === undefined) return;
 
-  const existingBackup = await loadChromeBackup(backupPath);
+  const loadResult = await loadChromeBackup(backupPath);
+  if (!loadResult.ok) {
+    // A corrupt backup must never be treated as "no backup": doing so would
+    // re-snapshot an already-themed config and permanently lose the original
+    // values. Surface the failure instead of silently continuing.
+    throw new Error(`herdr chrome restore aborted: ${loadResult.reason}`);
+  }
+  const existingBackup = loadResult.backup;
   let next: string;
 
   if (theme) {
@@ -469,8 +478,13 @@ export async function syncHerdrChrome(
 
   if (next !== original) {
     await writeFile(configPath, next);
-    await (host.reload?.() ?? reloadHerdrConfig(env));
   }
+
+  // Reload even when the config is already clean: a previous restore may have
+  // written the file while `reload-config` failed (server memory still themed).
+  // Retrying the reload is what makes the server converge; without it the
+  // second reset sees next === original and would skip the reload forever.
+  await (host.reload?.() ?? reloadHerdrConfig(env));
 
   if (!theme) {
     try {

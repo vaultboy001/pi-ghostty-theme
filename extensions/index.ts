@@ -108,6 +108,7 @@ export function createExtension(
     let commitTail: Promise<void> = Promise.resolve();
     let chromeTail: Promise<void> = Promise.resolve();
     let chromeGeneration = 0;
+    let chromeError: string | undefined;
     let running = false;
     let pendingReloadTheme:
       | { name: string; theme: GhosttyTheme; token: MutationToken }
@@ -211,6 +212,7 @@ export function createExtension(
     const queueChrome = (theme: GhosttyTheme | undefined): void => {
       if (!host.syncHerdrChrome) return;
       const generation = ++chromeGeneration;
+      chromeError = undefined;
       chromeTail = chromeTail
         .catch(() => undefined)
         .then(async () => {
@@ -218,9 +220,16 @@ export function createExtension(
           try {
             await host.syncHerdrChrome?.(theme);
           } catch (error) {
-            lastIssue = `herdr chrome sync failed: ${describeError(error)}`;
+            chromeError = describeError(error);
+            lastIssue = `herdr chrome sync failed: ${chromeError}`;
           }
         });
+    };
+
+    const takeChromeError = (): string | undefined => {
+      const error = chromeError;
+      chromeError = undefined;
+      return error;
     };
 
     const report = (
@@ -320,12 +329,16 @@ export function createExtension(
     interface ResetOutcome {
       persistenceError?: string;
       terminalError?: string;
+      chromeError?: string;
     }
 
     const resetIssues = (outcome: ResetOutcome): string[] => {
       const issues: string[] = [];
       if (outcome.terminalError) {
         issues.push(`terminal restoration failed: ${outcome.terminalError}`);
+      }
+      if (outcome.chromeError) {
+        issues.push(`herdr chrome restore failed: ${outcome.chromeError}`);
       }
       if (outcome.persistenceError) {
         issues.push(
@@ -342,6 +355,8 @@ export function createExtension(
       };
       queueChrome(undefined);
       await chromeTail;
+      const chromeIssue = takeChromeError();
+      if (chromeIssue) outcome.chromeError = chromeIssue;
 
       try {
         await host.saveSelection(undefined);

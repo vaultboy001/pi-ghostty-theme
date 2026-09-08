@@ -241,3 +241,84 @@ test("syncHerdrChrome is a no-op outside Herdr", async () => {
     },
   });
 });
+
+test("restore reloads even when config is already clean (P1-1)", async () => {
+  const root = await mkdtemp(join(tmpdir(), "pi-ghostty-herdr-"));
+  const configPath = join(root, "config.toml");
+  const backupPath = join(root, "backup.json");
+  await mkdir(root, { recursive: true });
+  await writeFile(
+    configPath,
+    `[theme]\nname = "catppuccin"\nauto_switch = false\n`,
+  );
+  const reloads: string[] = [];
+  const host = {
+    env: () => ({ HERDR_ENV: "1" }),
+    configPath: () => configPath,
+    backupPath: () => backupPath,
+    reload: async () => {
+      reloads.push("reload");
+    },
+  };
+
+  // Apply, then fail the reload once, then restore twice.
+  await syncHerdrChrome(sampleTheme(), host);
+  assert.equal(reloads.length, 1);
+
+  // First restore: simulated reload failure (server memory stays themed)
+  const failingHost = {
+    ...host,
+    reload: async () => {
+      reloads.push("reload");
+      throw new Error("reload failed");
+    },
+  };
+  const applied = await readFile(configPath, "utf8");
+  const cleanConfig = applied; // still themed on disk
+  void cleanConfig;
+  await assert.rejects(
+    syncHerdrChrome(undefined, failingHost),
+    /reload failed/,
+  );
+  assert.equal(reloads.length, 2);
+
+  // Second restore: config file already restored, but must still reload to
+  // converge server memory. Backup must survive until reload succeeds.
+  await syncHerdrChrome(undefined, host);
+  assert.equal(reloads.length, 3);
+  const restored = await readFile(configPath, "utf8");
+  assert.equal(
+    readSectionValue(restored, "theme.custom", "panel_bg"),
+    undefined,
+  );
+});
+
+test("corrupt chrome backup aborts instead of silent no-op (P1-2)", async () => {
+  const root = await mkdtemp(join(tmpdir(), "pi-ghostty-herdr-"));
+  const configPath = join(root, "config.toml");
+  const backupPath = join(root, "backup.json");
+  await mkdir(root, { recursive: true });
+  await writeFile(configPath, `[theme]\nname = "catppuccin"\n`);
+  await writeFile(backupPath, "{corrupt json");
+
+  const writes: string[] = [];
+  const host = {
+    env: () => ({ HERDR_ENV: "1" }),
+    configPath: () => configPath,
+    backupPath: () => backupPath,
+    reload: async () => {},
+  };
+
+  // Restore with a corrupt backup must throw, not quietly do nothing.
+  await assert.rejects(
+    syncHerdrChrome(undefined, host),
+    /chrome backup contains invalid JSON/,
+  );
+
+  // Apply with a corrupt backup must also abort: it must NOT re-snapshot the
+  // current (possibly already themed) config and overwrite the true original.
+  await assert.rejects(
+    syncHerdrChrome(sampleTheme(), host),
+    /chrome backup contains invalid JSON/,
+  );
+});
