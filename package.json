@@ -1,7 +1,7 @@
 {
   "name": "pi-ghostty-theme",
-  "version": "0.3.4",
-  "description": "Choose and live-preview Ghostty terminal themes inside Pi without changing Pi's own theme.",
+  "version": "0.3.5",
+  "description": "Live-preview and persist native Ghostty terminal themes inside Pi — OSC real-time preview, Herdr chrome sync, Pi themes stay independent.",
   "type": "module",
   "license": "MIT",
   "repository": {
@@ -13,15 +13,16 @@
   "keywords": [
     "pi-package",
     "pi-coding-agent",
+    "pi-extension",
     "ghostty",
-    "terminal",
-    "theme",
+    "ghostty-theme",
+    "terminal-theme",
     "theme-picker",
     "osc",
     "live-preview",
     "herdr",
-    "crossterm",
-    "terminal-theme"
+    "mux",
+    "terminal"
   ],
   "files": [
     "extensions",

@@ -24,6 +24,15 @@ Choose and live-preview native Ghostty themes from inside Pi without replacing P
 
 Ghostty's own theme selector (`ghostty +list-themes` / the `theme` config key) applies a theme globally, requires reloading config or a restart, and gives no live feedback inside Pi. This plugin selects from the **same catalog**, previews **live via OSC**, and persists once you press Enter — all without touching Pi's own `dark`/`light`/custom theme.
 
+## Supported environments
+
+| Environment | Status | Notes |
+|---|---|---|
+| **Ghostty** (direct TTY) | ✅ Primary | Live preview + persist via OSC; other Ghostty windows follow after config reload |
+| **Herdr** (pane) | ✅ Supported | Pane content recolor + Herdr chrome sync via `[theme.custom]`; needs `HERDR_ENV` |
+| **tmux / GNU screen** | ❌ Not supported | OSC preview is consumed by the mux's embedded terminal before reaching Ghostty |
+| **Other terminals** (iTerm, Terminal, etc.) | ❌ Not supported | Requires Ghostty's terminal protocol |
+
 ## Requirements
 
 - Pi `0.82.0` or a newer compatible release
@@ -106,6 +115,40 @@ There is no polling loop, periodic reassertion, copied theme catalog, Pi setting
 - OSC overrides are terminal state. A crash or `SIGKILL` can prevent cleanup; closing the surface or reloading Ghostty configuration restores configured defaults. Inside Herdr, chrome tokens are written to `[theme.custom]` with a backup at `~/.pi/agent/ghostty-herdr-chrome.json`; `/ghostty-theme reset` restores them. A crash can leave Herdr chrome on the last preview until reset or the next Pi session restore.
 - The extension stays inactive outside Pi's TUI, when stdout is not a TTY, in non-Ghostty terminals, and under tmux or GNU screen (no OSC passthrough through multiplexers). It emits no OSC bytes in JSON, RPC, or print modes.
 - Custom Ghostty themes are configuration files. Only select themes you trust.
+
+## FAQ
+
+**Q: Does this change Pi's own theme?**
+
+No. Pi's `dark`/`light`/custom theme stays untouched. This plugin changes only the Ghostty terminal layer (background, foreground, ANSI 0–15, cursor).
+
+**Q: Which terminals does it support?**
+
+Ghostty (direct or via Herdr pane). tmux / GNU screen / other terminals are not supported because they consume or lack the OSC color protocol.
+
+**Q: What does "live preview" mean?**
+
+As you `↑` / `↓` through themes, the terminal surface (and Herdr chrome inside Herdr) recolors instantly via OSC — before you press Enter. `Esc` restores the previous choice.
+
+**Q: Does it work in tmux?**
+
+No. tmux's embedded terminal intercepts the OSC preview before it reaches Ghostty. The plugin never edits `~/.tmux.conf`.
+
+**Q: How do I uninstall?**
+
+```bash
+/ghostty-theme reset
+pi uninstall pi-ghostty-theme
+```
+
+## Comparison
+
+**vs. `pi-theme-picker` (ldelossa)** — that plugin switches **Pi's own themes** (`/theme`). This one switches **Ghostty terminal themes** (`/ghostty-theme`) and never touches Pi's theme. Different layers, but both are useful side by side:
+
+```text
+pi-theme-picker    → /theme nord          (Pi UI colors)
+pi-ghostty-theme   → /ghostty-theme nord  (Ghostty terminal colors)
+```
 
 ## Development
 
