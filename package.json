@@ -15,7 +15,13 @@
     "pi-coding-agent",
     "ghostty",
     "terminal",
-    "theme"
+    "theme",
+    "theme-picker",
+    "osc",
+    "live-preview",
+    "herdr",
+    "crossterm",
+    "terminal-theme"
   ],
   "files": [
     "extensions",

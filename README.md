@@ -10,16 +10,26 @@
 
 Choose and live-preview native Ghostty themes from inside Pi without replacing Pi's own `dark`, `light`, or custom theme.
 
+- **Searchable picker** — type to filter Ghostty's installed themes.
+- **Live preview** — `↑` / `↓` recolors the terminal surface instantly via OSC before you commit.
+- **Persists** — the selected theme is saved and reapplied on the next Pi start.
+- **Herdr aware** — inside Herdr, preview also recolors the client's chrome (`[theme.custom]`) without touching `theme.name`.
+- **Pi themes stay independent** — this extension never calls Pi's theme API.
+
 <p align="center">
   <img src="https://raw.githubusercontent.com/vaultboy001/pi-ghostty-theme/main/assets/demo.gif" alt="Live demo of the /ghostty-theme picker" width="100%" />
 </p>
+
+## Why
+
+Ghostty's own theme selector (`ghostty +list-themes` / the `theme` config key) applies a theme globally, requires reloading config or a restart, and gives no live feedback inside Pi. This plugin selects from the **same catalog**, previews **live via OSC**, and persists once you press Enter — all without touching Pi's own `dark`/`light`/custom theme.
 
 ## Requirements
 
 - Pi `0.82.0` or a newer compatible release
 - Node.js `>=22.19.0`
 - Ghostty `>=1.2.0`
-- A direct Ghostty TTY; tmux and GNU screen are intentionally unsupported
+- A direct Ghostty TTY, or Pi in a Herdr pane. tmux / GNU screen do not work: their embedded terminals consume the OSC preview before it reaches Ghostty. The plugin never edits `~/.tmux.conf` or `~/.screenrc`.
 
 ## Install
 
@@ -94,7 +104,7 @@ There is no polling loop, periodic reassertion, copied theme catalog, Pi setting
 - Theme names containing C0, DEL, or C1 terminal-control characters are ignored. The catalog parser also requires the displayed name to match the source filename, preventing newline-based record injection.
 - Theme colors accept six-digit RGB and Ghostty's named X11 colors. CSS color functions, dynamic values such as `cell-foreground`, and unknown names are rejected.
 - OSC overrides are terminal state. A crash or `SIGKILL` can prevent cleanup; closing the surface or reloading Ghostty configuration restores configured defaults. Inside Herdr, chrome tokens are written to `[theme.custom]` with a backup at `~/.pi/agent/ghostty-herdr-chrome.json`; `/ghostty-theme reset` restores them. A crash can leave Herdr chrome on the last preview until reset or the next Pi session restore.
-- The extension stays inactive outside Pi's TUI, when stdout is not a TTY, in non-Ghostty terminals, and under tmux or GNU screen. It emits no OSC bytes in JSON, RPC, or print modes.
+- The extension stays inactive outside Pi's TUI, when stdout is not a TTY, in non-Ghostty terminals, and under tmux or GNU screen (no OSC passthrough through multiplexers). It emits no OSC bytes in JSON, RPC, or print modes.
 - Custom Ghostty themes are configuration files. Only select themes you trust.
 
 ## Development
